@@ -2,6 +2,10 @@
 
 API Node.js (Express) pour l’application **GoLivra** : authentification (OTP SMS Twilio + sessions), commandes, entreprises, produits, livraisons, administration.
 
+## Workflow Git
+
+Après chaque modification du code : enregistrer les changements puis pousser sur GitHub (`git add -A`, `git commit -m "…"`, `git push origin main`).
+
 ## Prérequis
 
 - Node.js **20+** (recommandé : **22**)
