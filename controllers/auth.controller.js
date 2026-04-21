@@ -5,38 +5,49 @@ const { generateToken } = require('../utils/token');
 
 const PUBLIC_REGISTER_ROLES = new Set(['client', 'vendeur']);
 
-async function consumeVerifiedOtp(db, telephone, code) {
+/**
+ * Retrouve un OTP valide (téléphone + code, non expiré). Ne supprime rien :
+ * la suppression a lieu uniquement après une authentification / inscription réussie,
+ * pour éviter les comptes orphelins si l’insertion de session échoue.
+ */
+async function findValidOtpRow(db, telephone, code) {
   const { data: otpRow, error } = await db
     .from('otp_codes')
-    .select('id, expire_le, valide')
+    .select('id, expire_le, code')
     .eq('telephone', telephone)
     .eq('code', code)
     .order('expire_le', { ascending: false })
     .limit(1)
     .maybeSingle();
 
-  if (error || !otpRow) throw createHttpError(400, 'La vérification OTP est requise');
-  if (!otpRow.valide) throw createHttpError(400, 'Le code OTP n’a pas encore été vérifié');
-  if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'Le code OTP a expiré');
+  if (error || !otpRow) throw createHttpError(400, 'Code de vérification introuvable ou incorrect');
+  if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'Le code de vérification a expiré');
+  if (String(otpRow.code) !== String(code)) throw createHttpError(400, 'Code de vérification incorrect');
 
-  const { error: deleteError } = await db.from('otp_codes').delete().eq('id', otpRow.id);
+  return otpRow;
+}
+
+async function deleteOtpRow(db, otpId) {
+  const { error: deleteError } = await db.from('otp_codes').delete().eq('id', otpId);
   if (deleteError) throw deleteError;
 }
 
 async function register(req, res, next) {
   try {
-    const { nom, telephone, motDePasse, otpCode, role = 'client' } = req.body;
+    const rawRole = req.body.role;
+    const role = typeof rawRole === 'string' && rawRole.trim() ? rawRole.trim() : 'client';
+    const { nom, telephone, motDePasse, otpCode } = req.body;
     requireFields(req.body, ['nom', 'telephone', 'motDePasse', 'otpCode']);
 
     const db = getDb();
     if (!PUBLIC_REGISTER_ROLES.has(role)) {
-      throw createHttpError(403, 'Seuls les rôles client et vendeur peuvent s’inscrire seuls');
+      throw createHttpError(403, 'Inscription réservée aux comptes client ou professionnel.');
     }
 
-    await consumeVerifiedOtp(db, telephone, otpCode);
+    const otpRow = await findValidOtpRow(db, telephone, otpCode);
 
     const { data: roleRow, error: roleError } = await db.from('roles').select('id').eq('nom', role).single();
-    if (roleError || !roleRow) throw createHttpError(400, 'Rôle invalide');
+    if (roleError || !roleRow) throw createHttpError(400, 'Profil demandé non reconnu.');
     const hashedPassword = await bcrypt.hash(motDePasse, 10);
 
     const { data, error } = await db
@@ -62,7 +73,12 @@ async function register(req, res, next) {
       token,
       expire_le: expireDate.toISOString(),
     });
-    if (sessionError) throw sessionError;
+    if (sessionError) {
+      await db.from('utilisateurs').delete().eq('id', data.id);
+      throw sessionError;
+    }
+
+    await deleteOtpRow(db, otpRow.id);
 
     return res.status(201).json({
       token,
@@ -85,7 +101,7 @@ async function login(req, res, next) {
     requireFields(req.body, ['telephone', 'motDePasse', 'otpCode']);
 
     const db = getDb();
-    await consumeVerifiedOtp(db, telephone, otpCode);
+    const otpRow = await findValidOtpRow(db, telephone, otpCode);
 
     const { data: user, error } = await db
       .from('utilisateurs')
@@ -118,6 +134,8 @@ async function login(req, res, next) {
       expire_le: expireDate.toISOString(),
     });
     if (sessionError) throw sessionError;
+
+    await deleteOtpRow(db, otpRow.id);
 
     return res.json({
       token,

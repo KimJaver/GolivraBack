@@ -44,20 +44,16 @@ async function verifyOtp(req, res, next) {
     const db = getDb();
     const { data: otpRow, error } = await db
       .from('otp_codes')
-      .select('id, code, expire_le, valide')
+      .select('id, code, expire_le')
       .eq('telephone', telephone)
       .eq('code', code)
       .order('expire_le', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (error || !otpRow) throw createHttpError(400, 'Aucune demande OTP trouvée');
-    if (otpRow.valide) throw createHttpError(400, 'Ce code OTP a déjà été utilisé');
-    if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'Le code OTP a expiré');
-    if (otpRow.code !== code) throw createHttpError(400, 'Code OTP incorrect');
-
-    const { error: updateError } = await db.from('otp_codes').update({ valide: true }).eq('id', otpRow.id);
-    if (updateError) throw updateError;
+    if (error || !otpRow) throw createHttpError(400, 'Code de vérification introuvable ou incorrect');
+    if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'Le code de vérification a expiré');
+    if (String(otpRow.code) !== String(code)) throw createHttpError(400, 'Code de vérification incorrect');
 
     return res.json({ verified: true });
   } catch (error) {
