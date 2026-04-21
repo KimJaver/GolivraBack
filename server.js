@@ -74,10 +74,16 @@ async function ensureBaseRoles() {
 }
 
 async function startServer() {
+  if (process.env.NODE_ENV === 'production' && !process.env.CORS_ORIGINS?.trim()) {
+    console.warn(
+      '[golivra] CORS_ORIGINS is empty: all browser origins are allowed. Set CORS_ORIGINS (comma-separated) for a public web API.',
+    );
+  }
   await ensureBaseRoles();
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
-    console.log(`API running on port ${PORT}`);
+    const env = process.env.NODE_ENV || 'development';
+    console.log(`API running on port ${PORT} (NODE_ENV=${env})`);
   });
 }
 
