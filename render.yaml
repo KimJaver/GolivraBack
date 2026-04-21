@@ -1,0 +1,31 @@
+# Blueprint Render : https://render.com/docs/blueprint-specification
+# Créer un compte Render → New → Blueprint → connecter ce dépôt GitHub.
+# Renseigner les variables marquées sync: false lors de l’import ou dans Environment.
+
+services:
+  - type: web
+    name: golivra-api
+    runtime: node
+    region: frankfurt
+    plan: free
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false

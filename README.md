@@ -33,6 +33,24 @@ Santé de l’API : `GET http://localhost:3000/health`
 | `TWILIO_FROM_NUMBER` | Numéro expéditeur SMS |
 | `CORS_ORIGINS` | Liste d’origines séparées par des virgules (recommandé en production pour le web). Vide = autoriser toutes les origines (pratique pour les apps mobiles). |
 
+## Mise en ligne (test création de comptes, etc.)
+
+**Important :** [GitHub](https://github.com/KimJaver/GolivraBack) héberge uniquement le **code**. Pour une URL publique (`https://…`), il faut un **hébergeur** qui exécute Node.
+
+### Option recommandée — Render (gratuit pour tester)
+
+1. Compte sur [Render](https://render.com/) (possible avec le même e-mail que GitHub, ex. `kimjaver7@gmail.com`).
+2. **New** → **Blueprint** → connecter le dépôt **KimJaver/GolivraBack** (autoriser Render sur GitHub si demandé).
+3. Render détecte `render.yaml` : valider le service **golivra-api**.
+4. Renseigner les variables d’environnement (Supabase secret, Twilio, etc.) — les mêmes que dans `.env.example`, **sans** commiter de secrets.
+5. Après le déploiement, noter l’URL du type `https://golivra-api.onrender.com` et tester :
+   - `GET https://…/health`
+   - flux OTP : `POST /api/otp/request` puis `POST /api/otp/verify`, puis `POST /api/auth/register`.
+
+Pour l’app Expo / web : `EXPO_PUBLIC_API_BASE_URL=https://golivra-api.onrender.com` (sans `/api` à la fin).
+
+Sur l’offre gratuite Render, le service peut « s’endormir » après inactivité ; le premier appel peut prendre ~1 minute.
+
 ## Déploiement sur Internet
 
 ### Option A — Docker
