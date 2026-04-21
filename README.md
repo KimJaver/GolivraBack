@@ -9,7 +9,7 @@ Après chaque modification du code : enregistrer les changements puis pousser su
 ## Prérequis
 
 - Node.js **20+** (recommandé : **22**)
-- Un projet [Supabase](https://supabase.com/) avec le schéma appliqué (`schema.sql` à la racine du dépôt)
+- Un projet [Supabase](https://supabase.com/) avec le schéma appliqué (`schema.sql` à la racine du dépôt). Si la base existait avant l’ajout de `entreprises.image_url`, exécuter : `ALTER TABLE entreprises ADD COLUMN IF NOT EXISTS image_url TEXT;`
 - Compte [Twilio](https://www.twilio.com/) pour l’envoi des SMS OTP (optionnel en dev si vous acceptez que l’OTP soit quand même enregistré en base sans SMS)
 
 ## Installation locale

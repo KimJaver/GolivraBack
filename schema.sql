@@ -92,10 +92,14 @@ CREATE TABLE entreprises (
     description TEXT,
     telephone VARCHAR(20),
     adresse TEXT,
+    image_url TEXT,
     latitude DECIMAL(10,8),
     longitude DECIMAL(11,8),
     ouvert BOOLEAN DEFAULT true
 );
+
+-- Si la table existait déjà sans image_url :
+-- ALTER TABLE entreprises ADD COLUMN IF NOT EXISTS image_url TEXT;
 
 -- =========================
 -- 9. HORAIRES

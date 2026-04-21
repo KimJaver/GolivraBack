@@ -1,5 +1,7 @@
 const { getDb } = require('../config/db');
-const { requireFields } = require('../utils/http');
+const { requireFields, createHttpError } = require('../utils/http');
+
+const COMMERCE_TYPES = new Set(['restaurant', 'boutique']);
 
 async function listEnterprises(req, res, next) {
   try {
@@ -21,8 +23,12 @@ async function listEnterprises(req, res, next) {
 
 async function createEnterprise(req, res, next) {
   try {
-    const { nom, type, description, telephone, adresse, latitude, longitude } = req.body;
+    const { nom, type, description, telephone, adresse, latitude, longitude, imageUrl } = req.body;
     requireFields(req.body, ['nom', 'type', 'telephone', 'adresse']);
+
+    if (!COMMERCE_TYPES.has(type)) {
+      throw createHttpError(400, 'Type de commerce invalide (restaurant ou boutique).');
+    }
 
     const db = getDb();
     const { data, error } = await db
@@ -34,6 +40,7 @@ async function createEnterprise(req, res, next) {
         description: description || null,
         telephone,
         adresse,
+        image_url: imageUrl || null,
         latitude: latitude || null,
         longitude: longitude || null,
       })
