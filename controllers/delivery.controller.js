@@ -3,7 +3,7 @@ const { createHttpError, requireFields } = require('../utils/http');
 
 async function getCourierIdByPhone(db, telephone) {
   const { data: courier, error } = await db.from('livreurs').select('id').eq('telephone', telephone).single();
-  if (error || !courier) throw createHttpError(404, 'Courier profile not found');
+  if (error || !courier) throw createHttpError(404, 'Profil livreur introuvable');
   return courier.id;
 }
 
@@ -17,13 +17,13 @@ async function getDeliveryStatus(req, res, next) {
       .select('id, statut, cree_le, utilisateur_id, entreprise_id')
       .eq('id', orderId)
       .single();
-    if (orderError || !order) throw createHttpError(404, 'Order not found');
+    if (orderError || !order) throw createHttpError(404, 'Commande introuvable');
 
     const role = req.auth.role;
     if (role === 'admin') {
       // full access
     } else if (role === 'client' && order.utilisateur_id !== req.auth.userId) {
-      throw createHttpError(403, 'Not allowed to view this order');
+      throw createHttpError(403, 'Accès à cette commande non autorisé');
     } else if (role === 'vendeur') {
       const { data: owned } = await db
         .from('entreprises')
@@ -31,17 +31,17 @@ async function getDeliveryStatus(req, res, next) {
         .eq('id', order.entreprise_id)
         .eq('proprietaire_id', req.auth.userId)
         .maybeSingle();
-      if (!owned) throw createHttpError(403, 'Not allowed to view this order');
+      if (!owned) throw createHttpError(403, 'Accès à cette commande non autorisé');
     } else if (role === 'livreur') {
       const { data: courier } = await db.from('livreurs').select('id').eq('telephone', req.auth.telephone).maybeSingle();
-      if (!courier) throw createHttpError(403, 'Courier profile not found');
+      if (!courier) throw createHttpError(403, 'Profil livreur introuvable');
       const { data: deliveryRow } = await db
         .from('livraisons')
         .select('id, livreur_id')
         .eq('commande_id', orderId)
         .maybeSingle();
       if (!deliveryRow || deliveryRow.livreur_id !== courier.id) {
-        throw createHttpError(403, 'Not allowed to view this order');
+        throw createHttpError(403, 'Accès à cette commande non autorisé');
       }
     }
 
@@ -121,7 +121,7 @@ async function acceptDelivery(req, res, next) {
       .eq('id', deliveryId)
       .select('*')
       .single();
-    if (error || !data) throw createHttpError(404, 'Delivery not found');
+    if (error || !data) throw createHttpError(404, 'Livraison introuvable');
 
     await db.from('commandes').update({ statut: 'en livraison' }).eq('id', data.commande_id);
     return res.json(data);
@@ -146,7 +146,7 @@ async function completeDelivery(req, res, next) {
       .eq('livreur_id', courierId)
       .select('*')
       .single();
-    if (error || !data) throw createHttpError(404, 'Delivery not found for this courier');
+    if (error || !data) throw createHttpError(404, 'Livraison introuvable pour ce livreur');
 
     await db.from('commandes').update({ statut: 'livree' }).eq('id', data.commande_id);
     return res.json(data);

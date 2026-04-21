@@ -26,8 +26,8 @@ async function createProduct(req, res, next) {
       .select('id, proprietaire_id')
       .eq('id', enterpriseId)
       .single();
-    if (enterpriseError || !enterprise) throw createHttpError(404, 'Enterprise not found');
-    if (enterprise.proprietaire_id !== req.auth.userId) throw createHttpError(403, 'Not allowed for this enterprise');
+    if (enterpriseError || !enterprise) throw createHttpError(404, 'Entreprise introuvable');
+    if (enterprise.proprietaire_id !== req.auth.userId) throw createHttpError(403, 'Action non autorisée pour cette entreprise');
 
     const { data, error } = await db
       .from('produits')

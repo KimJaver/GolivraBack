@@ -5,7 +5,7 @@ function getTwilioClient() {
   const authToken = process.env.TWILIO_AUTH_TOKEN;
 
   if (!accountSid || !authToken) {
-    throw new Error('Twilio credentials are not configured');
+    throw new Error('Identifiants Twilio non configurés');
   }
 
   return twilio(accountSid, authToken);
@@ -15,7 +15,7 @@ async function sendSms(to, body) {
   const from = process.env.TWILIO_FROM_NUMBER;
 
   if (!from) {
-    throw new Error('TWILIO_FROM_NUMBER is not configured');
+    throw new Error('TWILIO_FROM_NUMBER n’est pas configuré');
   }
 
   const client = getTwilioClient();

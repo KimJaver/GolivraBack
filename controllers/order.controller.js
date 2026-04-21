@@ -18,12 +18,12 @@ async function createOrder(req, res, next) {
     const { entrepriseId, articles, adresseLivraison, latitude, longitude } = req.body;
     requireFields(req.body, ['entrepriseId', 'articles', 'adresseLivraison']);
     if (!Array.isArray(articles) || articles.length === 0) {
-      throw createHttpError(400, 'articles must be a non-empty array');
+      throw createHttpError(400, 'Le champ articles doit être un tableau non vide');
     }
 
     const total = articles.reduce((sum, article) => {
       if (!article.itemId || !article.typeItem || !article.quantite || !article.prixUnitaire) {
-        throw createHttpError(400, 'Each article requires itemId, typeItem, quantite, prixUnitaire');
+        throw createHttpError(400, 'Chaque article doit inclure itemId, typeItem, quantite et prixUnitaire');
       }
       return sum + Number(article.quantite) * Number(article.prixUnitaire);
     }, 0);
@@ -88,7 +88,7 @@ async function getOrderDetails(req, res, next) {
       .eq('id', orderId)
       .eq('utilisateur_id', req.auth.userId)
       .single();
-    if (error || !order) throw createHttpError(404, 'Order not found');
+    if (error || !order) throw createHttpError(404, 'Commande introuvable');
 
     const { data: articles, error: itemsError } = await db
       .from('commande_articles')
@@ -109,7 +109,7 @@ async function updateOrderStatus(req, res, next) {
     requireFields(req.body, ['statut']);
 
     if (!ALLOWED_STATUS.has(statut)) {
-      throw createHttpError(400, 'Unsupported order status');
+      throw createHttpError(400, 'Statut de commande non pris en charge');
     }
 
     const db = getDb();
@@ -121,7 +121,7 @@ async function updateOrderStatus(req, res, next) {
         .eq('id', orderId)
         .select('*')
         .single();
-      if (error || !data) throw createHttpError(404, 'Order not found');
+      if (error || !data) throw createHttpError(404, 'Commande introuvable');
       return res.json(data);
     }
 
@@ -131,7 +131,7 @@ async function updateOrderStatus(req, res, next) {
       .eq('proprietaire_id', req.auth.userId);
     if (entError) throw entError;
     const ownedIds = (ownedEnterprises || []).map((row) => row.id);
-    if (ownedIds.length === 0) throw createHttpError(403, 'No enterprise for this vendor');
+    if (ownedIds.length === 0) throw createHttpError(403, 'Aucune entreprise pour ce vendeur');
 
     const { data, error } = await db
       .from('commandes')
@@ -140,7 +140,7 @@ async function updateOrderStatus(req, res, next) {
       .in('entreprise_id', ownedIds)
       .select('*')
       .single();
-    if (error || !data) throw createHttpError(404, 'Order not found for this enterprise');
+    if (error || !data) throw createHttpError(404, 'Commande introuvable pour cette entreprise');
 
     return res.json(data);
   } catch (error) {

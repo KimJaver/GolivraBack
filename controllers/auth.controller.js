@@ -15,9 +15,9 @@ async function consumeVerifiedOtp(db, telephone, code) {
     .limit(1)
     .maybeSingle();
 
-  if (error || !otpRow) throw createHttpError(400, 'OTP verification is required');
-  if (!otpRow.valide) throw createHttpError(400, 'OTP not verified yet');
-  if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'OTP expired');
+  if (error || !otpRow) throw createHttpError(400, 'La vérification OTP est requise');
+  if (!otpRow.valide) throw createHttpError(400, 'Le code OTP n’a pas encore été vérifié');
+  if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'Le code OTP a expiré');
 
   const { error: deleteError } = await db.from('otp_codes').delete().eq('id', otpRow.id);
   if (deleteError) throw deleteError;
@@ -30,13 +30,13 @@ async function register(req, res, next) {
 
     const db = getDb();
     if (!PUBLIC_REGISTER_ROLES.has(role)) {
-      throw createHttpError(403, 'Only client and vendeur can self-register');
+      throw createHttpError(403, 'Seuls les rôles client et vendeur peuvent s’inscrire seuls');
     }
 
     await consumeVerifiedOtp(db, telephone, otpCode);
 
     const { data: roleRow, error: roleError } = await db.from('roles').select('id').eq('nom', role).single();
-    if (roleError || !roleRow) throw createHttpError(400, 'Invalid role');
+    if (roleError || !roleRow) throw createHttpError(400, 'Rôle invalide');
     const hashedPassword = await bcrypt.hash(motDePasse, 10);
 
     const { data, error } = await db
@@ -51,7 +51,7 @@ async function register(req, res, next) {
       .single();
 
     if (error) {
-      if (error.code === '23505') throw createHttpError(409, 'Phone number already registered');
+      if (error.code === '23505') throw createHttpError(409, 'Ce numéro de téléphone est déjà enregistré');
       throw error;
     }
 
@@ -94,13 +94,13 @@ async function login(req, res, next) {
       .single();
 
     if (error || !user) {
-      throw createHttpError(401, 'Invalid phone or password');
+      throw createHttpError(401, 'Téléphone ou mot de passe incorrect');
     }
 
     const isBcryptHash = user.mot_de_passe.startsWith('$2a$') || user.mot_de_passe.startsWith('$2b$');
     const passwordValid = isBcryptHash ? await bcrypt.compare(motDePasse, user.mot_de_passe) : user.mot_de_passe === motDePasse;
     if (!passwordValid) {
-      throw createHttpError(401, 'Invalid phone or password');
+      throw createHttpError(401, 'Téléphone ou mot de passe incorrect');
     }
 
     // Progressive migration for old plain-text records.
@@ -143,7 +143,7 @@ async function me(req, res, next) {
       .eq('id', req.auth.userId)
       .single();
 
-    if (error || !user) throw createHttpError(404, 'User not found');
+    if (error || !user) throw createHttpError(404, 'Utilisateur introuvable');
     return res.json(user);
   } catch (error) {
     return next(error);
@@ -154,7 +154,7 @@ async function logout(req, res, next) {
   try {
     const db = getDb();
     await db.from('sessions').delete().eq('id', req.auth.sessionId);
-    return res.json({ message: 'Logged out' });
+    return res.json({ message: 'Déconnexion réussie' });
   } catch (error) {
     return next(error);
   }

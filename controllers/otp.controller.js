@@ -27,10 +27,10 @@ async function requestOtp(req, res, next) {
       await sendSms(telephone, `Your Golivra OTP code is ${code}`);
     } catch (smsError) {
       // OTP stays valid even if SMS provider is down.
-      console.warn('Unable to send OTP SMS:', smsError.message);
+      console.warn('Impossible d’envoyer le SMS OTP :', smsError.message);
     }
 
-    return res.json({ message: 'OTP sent' });
+    return res.json({ message: 'Code OTP envoyé' });
   } catch (error) {
     return next(error);
   }
@@ -51,10 +51,10 @@ async function verifyOtp(req, res, next) {
       .limit(1)
       .maybeSingle();
 
-    if (error || !otpRow) throw createHttpError(400, 'No OTP request found');
-    if (otpRow.valide) throw createHttpError(400, 'OTP already used');
-    if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'OTP expired');
-    if (otpRow.code !== code) throw createHttpError(400, 'Invalid OTP');
+    if (error || !otpRow) throw createHttpError(400, 'Aucune demande OTP trouvée');
+    if (otpRow.valide) throw createHttpError(400, 'Ce code OTP a déjà été utilisé');
+    if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'Le code OTP a expiré');
+    if (otpRow.code !== code) throw createHttpError(400, 'Code OTP incorrect');
 
     const { error: updateError } = await db.from('otp_codes').update({ valide: true }).eq('id', otpRow.id);
     if (updateError) throw updateError;

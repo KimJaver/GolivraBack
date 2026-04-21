@@ -34,7 +34,7 @@ const corsOptions = {
     if (allowed.includes(origin)) {
       return callback(null, true);
     }
-    return callback(new Error(`CORS blocked for origin: ${origin}`));
+    return callback(new Error(`Origine refusée par CORS : ${origin}`));
   },
 };
 
@@ -54,11 +54,27 @@ app.use('/api/products', productRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.use((err, _req, res, _next) => {
-  const status = err.status || 500;
-  res.status(status).json({
-    message: err.message || 'Internal server error',
-    code: err.code || 'INTERNAL_ERROR',
-  });
+  const status = err.status || err.statusCode || 500;
+  let message = err.message || 'Erreur interne du serveur';
+  let code = err.code || 'ERREUR_INTERNE';
+
+  if (!err.status && !err.statusCode && err.code) {
+    if (err.code === '23505') {
+      message = 'Cette ressource existe déjà (contrainte d’unicité).';
+      code = 'CONFLIT_DONNEES';
+    } else if (err.code === '23503') {
+      message = 'Référence invalide : enregistrement lié introuvable.';
+      code = 'REFERENCE_INVALIDE';
+    } else if (String(err.code).startsWith('23')) {
+      message = 'Les données envoyées ne respectent pas les contraintes de la base.';
+      code = 'DONNEES_INVALIDES';
+    } else if (status >= 500) {
+      message = 'Erreur lors de l’accès aux données.';
+      code = 'ERREUR_BASE';
+    }
+  }
+
+  res.status(status).json({ message, code });
 });
 
 async function ensureBaseRoles() {
@@ -76,18 +92,18 @@ async function ensureBaseRoles() {
 async function startServer() {
   if (process.env.NODE_ENV === 'production' && !process.env.CORS_ORIGINS?.trim()) {
     console.warn(
-      '[golivra] CORS_ORIGINS is empty: all browser origins are allowed. Set CORS_ORIGINS (comma-separated) for a public web API.',
+      '[golivra] CORS_ORIGINS est vide : toutes les origines navigateur sont autorisées. Définissez CORS_ORIGINS (séparé par des virgules) pour une API web publique.',
     );
   }
   await ensureBaseRoles();
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     const env = process.env.NODE_ENV || 'development';
-    console.log(`API running on port ${PORT} (NODE_ENV=${env})`);
+    console.log(`API démarrée sur le port ${PORT} (NODE_ENV=${env})`);
   });
 }
 
 startServer().catch((error) => {
-  console.error('Unable to start server:', error.message);
+  console.error('Impossible de démarrer le serveur :', error.message);
   process.exit(1);
 });

@@ -8,7 +8,7 @@ function requireFields(payload, fields) {
   const missing = fields.filter((field) => payload[field] === undefined || payload[field] === null || payload[field] === '');
 
   if (missing.length > 0) {
-    throw createHttpError(400, `Missing required fields: ${missing.join(', ')}`);
+    throw createHttpError(400, `Champs obligatoires manquants : ${missing.join(', ')}`);
   }
 }
 

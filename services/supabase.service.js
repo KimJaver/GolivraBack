@@ -8,7 +8,7 @@ function getSupabaseClient() {
 
   if (!url || !key) {
     throw new Error(
-      'Supabase configuration is missing (set SUPABASE_URL and SUPABASE_SECRET_KEY or SUPABASE_SERVICE_KEY)',
+      'Configuration Supabase manquante (définissez SUPABASE_URL et SUPABASE_SECRET_KEY ou SUPABASE_SERVICE_KEY).',
     );
   }
 
