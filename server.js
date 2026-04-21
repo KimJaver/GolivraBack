@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const authRoutes = require('./routes/auth.routes');
 const otpRoutes = require('./routes/otp.routes');
@@ -17,6 +19,13 @@ if (process.env.NODE_ENV === 'production') {
   app.set('trust proxy', 1);
 }
 
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    contentSecurityPolicy: false,
+  }),
+);
+
 const corsOptions = {
   credentials: true,
   origin(origin, callback) {
@@ -24,7 +33,11 @@ const corsOptions = {
       return callback(null, true);
     }
     const raw = process.env.CORS_ORIGINS;
+    const isProd = process.env.NODE_ENV === 'production';
     if (!raw || !raw.trim()) {
+      if (isProd) {
+        return callback(null, false);
+      }
       return callback(null, true);
     }
     const allowed = raw
@@ -34,19 +47,38 @@ const corsOptions = {
     if (allowed.includes(origin)) {
       return callback(null, true);
     }
-    return callback(new Error(`Origine refusée par CORS : ${origin}`));
+    return callback(null, false);
   },
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '512kb' }));
+
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX) || 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'GET' && req.path === '/health',
+  message: { message: 'Trop de requêtes, réessayez plus tard.', code: 'RATE_LIMIT' },
+});
+
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_OTP_MAX) || 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Trop de demandes OTP, réessayez plus tard.', code: 'RATE_LIMIT_OTP' },
+});
+
+app.use(generalLimiter);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'golivra-backend' });
 });
 
+app.use('/api/otp', otpLimiter, otpRoutes);
 app.use('/api/auth', authRoutes);
-app.use('/api/otp', otpRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/delivery', deliveryRoutes);
 app.use('/api/enterprises', enterpriseRoutes);
@@ -92,7 +124,7 @@ async function ensureBaseRoles() {
 async function startServer() {
   if (process.env.NODE_ENV === 'production' && !process.env.CORS_ORIGINS?.trim()) {
     console.warn(
-      '[golivra] CORS_ORIGINS est vide : toutes les origines navigateur sont autorisées. Définissez CORS_ORIGINS (séparé par des virgules) pour une API web publique.',
+      '[golivra] CORS_ORIGINS est vide : les navigateurs (requêtes avec en-tête Origin) seront refusés par CORS. Les apps sans Origin (souvent mobile) restent autorisées. Renseignez CORS_ORIGINS pour le web.',
     );
   }
   await ensureBaseRoles();

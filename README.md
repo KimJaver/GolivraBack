@@ -31,7 +31,16 @@ Santé de l’API : `GET http://localhost:3000/health`
 | `TWILIO_ACCOUNT_SID` | SID Twilio |
 | `TWILIO_AUTH_TOKEN` | Token Twilio |
 | `TWILIO_FROM_NUMBER` | Numéro expéditeur SMS |
-| `CORS_ORIGINS` | Liste d’origines séparées par des virgules (recommandé en production pour le web). Vide = autoriser toutes les origines (pratique pour les apps mobiles). |
+| `CORS_ORIGINS` | Origines web autorisées (virgules). En **production**, si vide : les navigateurs (requête avec `Origin`) sont **refusés** par CORS ; sans `Origin` (souvent l’app native) reste autorisé. |
+| `RATE_LIMIT_MAX` | (Optionnel) Requêtes max / IP / 15 min, hors `GET /health`. Défaut : `200`. |
+| `RATE_LIMIT_OTP_MAX` | (Optionnel) Requêtes max sur `/api/otp/*` / IP / 15 min. Défaut : `30`. |
+
+## Sécurité (production)
+
+- **Helmet** : en-têtes HTTP renforcés ; `Content-Security-Policy` désactivé (API JSON) ; `Cross-Origin-Resource-Policy: cross-origin` pour rester compatible avec CORS / clients mobiles.
+- **Rate limiting** : limite globale + limite plus basse sur les routes OTP (anti-spam SMS / brute force).
+- **CORS** : en production sans `CORS_ORIGINS`, les appels **depuis un navigateur** (Expo Web, site Vercel, etc.) sont bloqués — renseignez les origines exactes (`https://…`).
+- **Corps JSON** : taille plafonnée à **512 ko** par requête.
 
 ## Mise en ligne (test création de comptes, etc.)
 
