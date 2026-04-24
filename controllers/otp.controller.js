@@ -26,8 +26,12 @@ async function requestOtp(req, res, next) {
     try {
       await sendSms(telephone, `Your Golivra OTP code is ${code}`);
     } catch (smsError) {
-      // OTP stays valid even if SMS provider is down.
-      console.warn('Impossible d’envoyer le SMS OTP :', smsError.message);
+      // Ne pas laisser un OTP "fantôme" en base si le SMS n'est pas parti.
+      await db.from('otp_codes').delete().eq('telephone', telephone).eq('code', code);
+      throw createHttpError(
+        503,
+        `Impossible d’envoyer le SMS de vérification pour le moment. Vérifiez la configuration SMS et réessayez. Détail: ${smsError.message}`,
+      );
     }
 
     return res.json({ message: 'Code OTP envoyé' });
