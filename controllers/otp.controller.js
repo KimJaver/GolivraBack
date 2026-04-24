@@ -44,7 +44,15 @@ async function requestOtp(req, res, next) {
 
     return res.json({ message: 'Code OTP envoyé' });
   } catch (error) {
-    return next(error);
+    if (error && (error.status || error.statusCode)) {
+      return next(error);
+    }
+    return next(
+      createHttpError(
+        500,
+        `Erreur OTP côté base/configuration. Détail: ${error?.message || 'inconnu'}`,
+      ),
+    );
   }
 }
 
@@ -69,7 +77,15 @@ async function verifyOtp(req, res, next) {
 
     return res.json({ verified: true });
   } catch (error) {
-    return next(error);
+    if (error && (error.status || error.statusCode)) {
+      return next(error);
+    }
+    return next(
+      createHttpError(
+        500,
+        `Erreur de vérification OTP côté base/configuration. Détail: ${error?.message || 'inconnu'}`,
+      ),
+    );
   }
 }
 
