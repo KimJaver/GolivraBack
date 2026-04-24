@@ -46,7 +46,13 @@ async function register(req, res, next) {
 
     const otpRow = await findValidOtpRow(db, telephone, otpCode);
 
-    const { data: roleRow, error: roleError } = await db.from('roles').select('id').eq('nom', role).single();
+    const { data: roleRow, error: roleError } = await db
+      .from('roles')
+      .select('id')
+      .eq('nom', role)
+      .order('id', { ascending: true })
+      .limit(1)
+      .maybeSingle();
     if (roleError || !roleRow) throw createHttpError(400, 'Profil demandé non reconnu.');
     const hashedPassword = await bcrypt.hash(motDePasse, 10);
 
@@ -97,11 +103,10 @@ async function register(req, res, next) {
 
 async function login(req, res, next) {
   try {
-    const { telephone, motDePasse, otpCode } = req.body;
-    requireFields(req.body, ['telephone', 'motDePasse', 'otpCode']);
+    const { telephone, motDePasse } = req.body;
+    requireFields(req.body, ['telephone', 'motDePasse']);
 
     const db = getDb();
-    const otpRow = await findValidOtpRow(db, telephone, otpCode);
 
     const { data: user, error } = await db
       .from('utilisateurs')
@@ -134,8 +139,6 @@ async function login(req, res, next) {
       expire_le: expireDate.toISOString(),
     });
     if (sessionError) throw sessionError;
-
-    await deleteOtpRow(db, otpRow.id);
 
     return res.json({
       token,
