@@ -19,7 +19,6 @@ async function requestOtp(req, res, next) {
       telephone,
       code,
       expire_le: expiresAt,
-      valide: false,
     });
     if (error) {
       throw createHttpError(
