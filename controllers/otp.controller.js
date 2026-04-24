@@ -21,13 +21,22 @@ async function requestOtp(req, res, next) {
       expire_le: expiresAt,
       valide: false,
     });
-    if (error) throw error;
+    if (error) {
+      throw createHttpError(
+        500,
+        `Impossible de générer le code de vérification. Vérifiez la table otp_codes (détail: ${error.message}).`,
+      );
+    }
 
     try {
       await sendSms(telephone, `Your Golivra OTP code is ${code}`);
     } catch (smsError) {
       // Ne pas laisser un OTP "fantôme" en base si le SMS n'est pas parti.
-      await db.from('otp_codes').delete().eq('telephone', telephone).eq('code', code);
+      try {
+        await db.from('otp_codes').delete().eq('telephone', telephone).eq('code', code);
+      } catch (cleanupError) {
+        console.warn('Rollback OTP impossible après échec SMS :', cleanupError.message);
+      }
       throw createHttpError(
         503,
         `Impossible d’envoyer le SMS de vérification pour le moment. Vérifiez la configuration SMS et réessayez. Détail: ${smsError.message}`,
