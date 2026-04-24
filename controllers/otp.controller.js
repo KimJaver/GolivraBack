@@ -6,6 +6,10 @@ function buildOtpCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+function isOtpTestModeEnabled() {
+  return process.env.OTP_TEST_MODE === '1' || process.env.OTP_TEST_MODE === 'true';
+}
+
 async function requestOtp(req, res, next) {
   try {
     const { telephone } = req.body;
@@ -27,6 +31,14 @@ async function requestOtp(req, res, next) {
       );
     }
 
+    if (isOtpTestModeEnabled()) {
+      return res.json({
+        message: 'Code OTP généré (mode test).',
+        testMode: true,
+        otpCode: code,
+      });
+    }
+
     try {
       await sendSms(telephone, `Your Golivra OTP code is ${code}`);
     } catch (smsError) {
@@ -42,7 +54,7 @@ async function requestOtp(req, res, next) {
       );
     }
 
-    return res.json({ message: 'Code OTP envoyé' });
+    return res.json({ message: 'Code OTP envoyé', testMode: false });
   } catch (error) {
     if (error && (error.status || error.statusCode)) {
       return next(error);
