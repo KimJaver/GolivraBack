@@ -48,4 +48,49 @@ async function authMiddleware(req, res, next) {
   }
 }
 
-module.exports = { authMiddleware };
+/** Remplit `req.auth` si un Bearer valide est présent ; sinon `req.auth = null` (ne renvoie jamais 401). */
+async function optionalAuthMiddleware(req, res, next) {
+  req.auth = null;
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return next();
+    }
+
+    const token = authHeader.replace('Bearer ', '').trim();
+    const db = getDb();
+
+    const { data: session, error } = await db
+      .from('sessions')
+      .select('id, utilisateur_id, expire_le')
+      .eq('token', token)
+      .single();
+
+    if (error || !session || new Date(session.expire_le) <= new Date()) {
+      return next();
+    }
+
+    const { data: user, error: userError } = await db
+      .from('utilisateurs')
+      .select('id, telephone, role_id')
+      .eq('id', session.utilisateur_id)
+      .single();
+    if (userError || !user) {
+      return next();
+    }
+
+    const { data: role } = await db.from('roles').select('nom').eq('id', user.role_id).maybeSingle();
+
+    req.auth = {
+      sessionId: session.id,
+      userId: session.utilisateur_id,
+      telephone: user.telephone,
+      role: role ? role.nom : null,
+    };
+  } catch {
+    req.auth = null;
+  }
+  return next();
+}
+
+module.exports = { authMiddleware, optionalAuthMiddleware };

@@ -29,6 +29,21 @@ async function createOrder(req, res, next) {
     }, 0);
 
     const db = getDb();
+
+    const { data: ent, error: entErr } = await db
+      .from('entreprises')
+      .select('id, statut_moderation, ouvert')
+      .eq('id', entrepriseId)
+      .maybeSingle();
+    if (entErr) throw entErr;
+    if (!ent) throw createHttpError(404, 'Commerce introuvable');
+    if (ent.statut_moderation !== 'active') {
+      throw createHttpError(403, 'Ce commerce n’est pas encore visible : validation en cours.');
+    }
+    if (ent.ouvert !== true) {
+      throw createHttpError(403, 'Ce commerce est temporairement fermé.');
+    }
+
     const { data: order, error } = await db
       .from('commandes')
       .insert({

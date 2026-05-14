@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS utilisateurs (
     nom VARCHAR(100),
     telephone VARCHAR(20) UNIQUE NOT NULL,
     mot_de_passe TEXT NOT NULL,
+    image_url TEXT,
     role_id INT REFERENCES roles(id),
     cree_le TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -95,7 +96,8 @@ CREATE TABLE IF NOT EXISTS entreprises (
     image_url TEXT,
     latitude DECIMAL(10,8),
     longitude DECIMAL(11,8),
-    ouvert BOOLEAN DEFAULT true
+    ouvert BOOLEAN DEFAULT true,
+    statut_moderation VARCHAR(30) NOT NULL DEFAULT 'en_attente'
 );
 
 -- Si la table existait déjà sans image_url :
@@ -341,6 +343,19 @@ ALTER TABLE IF EXISTS otp_codes
 
 ALTER TABLE IF EXISTS entreprises
   ADD COLUMN IF NOT EXISTS image_url TEXT;
+
+ALTER TABLE IF EXISTS entreprises
+  ADD COLUMN IF NOT EXISTS statut_moderation VARCHAR(30);
+
+UPDATE entreprises
+SET statut_moderation = 'active'
+WHERE statut_moderation IS NULL;
+
+ALTER TABLE IF EXISTS entreprises
+  ALTER COLUMN statut_moderation SET DEFAULT 'en_attente';
+
+ALTER TABLE IF EXISTS entreprises
+  ALTER COLUMN statut_moderation SET NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_nom_unique ON roles (nom);
 CREATE INDEX IF NOT EXISTS idx_otp_codes_telephone_code ON otp_codes (telephone, code);
