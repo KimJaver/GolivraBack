@@ -456,6 +456,375 @@ async function rejectUser(req, res, next) {
   }
 }
 
+function mapCommandeAdmin(c, client) {
+  const snap = c.adresse_livraison_snapshot;
+  let addr = null;
+  if (snap && typeof snap === 'object' && snap.texte) addr = snap.texte;
+  else if (typeof snap === 'string') addr = snap;
+  return {
+    id: c.id,
+    numero: c.numero,
+    statut: c.statut,
+    total: Number(c.total ?? 0),
+    sous_total: Number(c.sous_total ?? 0),
+    frais_livraison_total: Number(c.frais_livraison_total ?? 0),
+    adresse_livraison: addr,
+    created_at: c.created_at,
+    client: client
+      ? { id: client.id, nom: client.nom, telephone: client.telephone, email: client.email }
+      : null,
+  };
+}
+
+async function listAdminOrders(req, res, next) {
+  try {
+    const { status, q } = req.query;
+    const db = getDb();
+    let query = db.from('commandes').select('*').order('created_at', { ascending: false });
+    if (status) query = query.eq('statut', status);
+    const { data: commandes, error } = await query;
+    if (error) throw error;
+
+    const clientIds = [...new Set((commandes || []).map((c) => c.client_id))];
+    const { data: clients } = clientIds.length
+      ? await db.from('utilisateurs').select('id, nom, telephone, email').in('id', clientIds)
+      : { data: [] };
+    const clientMap = new Map((clients || []).map((u) => [u.id, u]));
+
+    let out = (commandes || []).map((c) => mapCommandeAdmin(c, clientMap.get(c.client_id)));
+
+    const search = typeof q === 'string' ? q.trim().toLowerCase() : '';
+    if (search) {
+      out = out.filter((o) => {
+        const hay = [o.numero, o.client?.nom, o.client?.telephone, o.client?.email]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return hay.includes(search);
+      });
+    }
+
+    return res.json(out);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getAdminOrderDetail(req, res, next) {
+  try {
+    const { orderId } = req.params;
+    const db = getDb();
+
+    const { data: order, error } = await db.from('commandes').select('*').eq('id', orderId).maybeSingle();
+    if (error) throw error;
+    if (!order) throw createHttpError(404, 'Commande introuvable.');
+
+    const { data: client } = await db
+      .from('utilisateurs')
+      .select('id, nom, telephone, email')
+      .eq('id', order.client_id)
+      .maybeSingle();
+
+    const { data: scs, error: scErr } = await db.from('sous_commandes').select('*').eq('commande_id', orderId);
+    if (scErr) throw scErr;
+
+    const enriched = [];
+    for (const sc of scs || []) {
+      const { data: items } = await db.from('sous_commande_items').select('*').eq('sous_commande_id', sc.id);
+      let etablissement = null;
+      if (sc.restaurant_id) {
+        const { data: r } = await db.from('restaurants').select('id, nom, type:statut').eq('id', sc.restaurant_id).maybeSingle();
+        if (r) etablissement = { id: r.id, nom: r.nom, type: 'restaurant' };
+      } else if (sc.boutique_id) {
+        const { data: b } = await db.from('boutiques').select('id, nom').eq('id', sc.boutique_id).maybeSingle();
+        if (b) etablissement = { id: b.id, nom: b.nom, type: 'boutique' };
+      }
+      enriched.push({
+        ...sc,
+        etablissement,
+        articles: items || [],
+        total: Number(sc.total ?? 0),
+        sous_total: Number(sc.sous_total ?? 0),
+        frais_livraison: Number(sc.frais_livraison ?? 0),
+        commission_ttc: Number(sc.commission_ttc ?? 0),
+      });
+    }
+
+    return res.json({
+      ...mapCommandeAdmin(order, client),
+      sous_commandes: enriched,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+function mapLogisticsAdmin(row, gestionnaire, nbLivreurs) {
+  return {
+    ...row,
+    statut_moderation: row.statut,
+    gestionnaire: gestionnaire || null,
+    nb_livreurs: nbLivreurs ?? 0,
+  };
+}
+
+async function listLogisticsCompanies(req, res, next) {
+  try {
+    const { status, q } = req.query;
+    const db = getDb();
+    let query = db.from('entreprises_logistiques').select('*').order('created_at', { ascending: false });
+    if (status) query = query.eq('statut', status);
+    const { data: rows, error } = await query;
+    if (error) throw error;
+
+    const gestIds = [...new Set((rows || []).map((r) => r.gestionnaire_id))];
+    const { data: gestionnaires } = gestIds.length
+      ? await db.from('utilisateurs').select('id, nom, telephone, email').in('id', gestIds)
+      : { data: [] };
+    const gestMap = new Map((gestionnaires || []).map((g) => [g.id, g]));
+
+    const out = [];
+    for (const row of rows || []) {
+      const { count } = await db
+        .from('livreurs')
+        .select('id', { count: 'exact', head: true })
+        .eq('entreprise_logistique_id', row.id);
+      out.push(mapLogisticsAdmin(row, gestMap.get(row.gestionnaire_id), count || 0));
+    }
+
+    const search = typeof q === 'string' ? q.trim().toLowerCase() : '';
+    const filtered = search
+      ? out.filter((e) => {
+          const hay = [e.nom, e.telephone, e.email, e.gestionnaire?.nom].filter(Boolean).join(' ').toLowerCase();
+          return hay.includes(search);
+        })
+      : out;
+
+    return res.json(filtered);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getLogisticsCompanyAdmin(req, res, next) {
+  try {
+    const { companyId } = req.params;
+    const db = getDb();
+    const { data: row, error } = await db
+      .from('entreprises_logistiques')
+      .select('*')
+      .eq('id', companyId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!row) throw createHttpError(404, 'Entreprise logistique introuvable.');
+
+    const { data: gestionnaire } = await db
+      .from('utilisateurs')
+      .select('id, nom, telephone, email')
+      .eq('id', row.gestionnaire_id)
+      .maybeSingle();
+
+    const { data: livreurs } = await db
+      .from('livreurs')
+      .select('id, type_vehicule, est_disponible, est_approuve, nb_livraisons_total, nb_livraisons_reussies')
+      .eq('entreprise_logistique_id', companyId);
+
+    return res.json({
+      ...mapLogisticsAdmin(row, gestionnaire, (livreurs || []).length),
+      livreurs: livreurs || [],
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function updateLogisticsStatus(req, res, next) {
+  try {
+    const { companyId } = req.params;
+    const { action, raison } = req.body || {};
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    let patch = {};
+    if (action === 'activate') {
+      patch = { statut: 'active', approuve_par: req.auth.userId, approuve_at: now, note_moderation: null };
+    } else if (action === 'reject') {
+      patch = {
+        statut: 'rejetee',
+        note_moderation: typeof raison === 'string' && raison.trim() ? raison.trim() : null,
+      };
+    } else if (action === 'suspend') {
+      patch = { statut: 'suspendue' };
+    } else {
+      throw createHttpError(400, 'Action invalide (activate, reject, suspend).');
+    }
+
+    const { data, error } = await db
+      .from('entreprises_logistiques')
+      .update(patch)
+      .eq('id', companyId)
+      .select('*')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw createHttpError(404, 'Entreprise logistique introuvable.');
+
+    const { data: gestionnaire } = await db
+      .from('utilisateurs')
+      .select('id, nom, telephone, email')
+      .eq('id', data.gestionnaire_id)
+      .maybeSingle();
+
+    return res.json(mapLogisticsAdmin(data, gestionnaire, 0));
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function listAdminDeliveries(req, res, next) {
+  try {
+    const { status } = req.query;
+    const db = getDb();
+    let query = db.from('livraisons').select('*').order('created_at', { ascending: false });
+    if (status) query = query.eq('statut', status);
+    const { data: livraisons, error } = await query;
+    if (error) throw error;
+
+    const out = [];
+    for (const liv of livraisons || []) {
+      const { data: sc } = await db.from('sous_commandes').select('*').eq('id', liv.sous_commande_id).maybeSingle();
+      let commande = null;
+      if (sc?.commande_id) {
+        const { data: c } = await db.from('commandes').select('id, numero, statut, created_at').eq('id', sc.commande_id).maybeSingle();
+        commande = c;
+      }
+      let livreur = null;
+      if (liv.livreur_id) {
+        const { data: l } = await db.from('livreurs').select('id, utilisateur_id, type_vehicule').eq('id', liv.livreur_id).maybeSingle();
+        if (l?.utilisateur_id) {
+          const { data: u } = await db.from('utilisateurs').select('nom, telephone').eq('id', l.utilisateur_id).maybeSingle();
+          livreur = { id: l.id, nom: u?.nom, telephone: u?.telephone, type_vehicule: l.type_vehicule };
+        }
+      }
+      const snap = liv.adresse_livraison_snapshot;
+      let adresse = '';
+      if (snap && typeof snap === 'object' && snap.texte) adresse = snap.texte;
+      else if (typeof snap === 'string') adresse = snap;
+
+      out.push({
+        id: liv.id,
+        statut: liv.statut,
+        created_at: liv.created_at,
+        attribuee_at: liv.attribuee_at,
+        livree_at: liv.livree_at,
+        adresse,
+        commande,
+        sous_commande_id: liv.sous_commande_id,
+        livreur,
+      });
+    }
+
+    return res.json(out);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function listAdminCouriers(req, res, next) {
+  try {
+    const db = getDb();
+    const { data: livreurs, error } = await db.from('livreurs').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+
+    const userIds = [...new Set((livreurs || []).map((l) => l.utilisateur_id))];
+    const { data: users } = userIds.length
+      ? await db.from('utilisateurs').select('id, nom, telephone, email').in('id', userIds)
+      : { data: [] };
+    const userMap = new Map((users || []).map((u) => [u.id, u]));
+
+    return res.json(
+      (livreurs || []).map((l) => ({
+        ...l,
+        utilisateur: userMap.get(l.utilisateur_id) || null,
+      })),
+    );
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function assignDeliveryCourier(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const { livreurId } = req.body || {};
+    requireFields(req.body, ['livreurId']);
+    const db = getDb();
+
+    const { data, error } = await db
+      .from('livraisons')
+      .update({
+        livreur_id: livreurId,
+        statut: 'en_route',
+        attribuee_at: new Date().toISOString(),
+      })
+      .eq('id', deliveryId)
+      .select('*')
+      .single();
+    if (error || !data) throw createHttpError(404, 'Livraison introuvable.');
+
+    return res.json(data);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getAdminCommissions(req, res, next) {
+  try {
+    const db = getDb();
+    const { data: scs, error } = await db
+      .from('sous_commandes')
+      .select('id, total, commission_ttc, commission_pct, created_at, restaurant_id, boutique_id, statut')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+
+    const totalCommission = (scs || []).reduce((acc, sc) => acc + Number(sc.commission_ttc ?? 0), 0);
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const monthScs = (scs || []).filter((sc) => sc.created_at >= monthStart);
+    const monthCommission = monthScs.reduce((acc, sc) => acc + Number(sc.commission_ttc ?? 0), 0);
+
+    const rows = [];
+    for (const sc of scs || []) {
+      let etablissement = '—';
+      if (sc.restaurant_id) {
+        const { data: r } = await db.from('restaurants').select('nom').eq('id', sc.restaurant_id).maybeSingle();
+        etablissement = r?.nom || 'Restaurant';
+      } else if (sc.boutique_id) {
+        const { data: b } = await db.from('boutiques').select('nom').eq('id', sc.boutique_id).maybeSingle();
+        etablissement = b?.nom || 'Boutique';
+      }
+      rows.push({
+        id: sc.id,
+        periode: sc.created_at,
+        etablissement,
+        livraisons: 1,
+        montant: Number(sc.total ?? 0),
+        commission: Number(sc.commission_ttc ?? 0),
+        statut: sc.statut,
+      });
+    }
+
+    return res.json({
+      total_commission: totalCommission,
+      commission_mois: monthCommission,
+      reversements_en_attente: monthCommission,
+      factures_emises: (scs || []).length,
+      lignes: rows,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   createCourier,
   getAdminStats,
@@ -468,4 +837,13 @@ module.exports = {
   listPendingUsers,
   approveUser,
   rejectUser,
+  listAdminOrders,
+  getAdminOrderDetail,
+  listLogisticsCompanies,
+  getLogisticsCompanyAdmin,
+  updateLogisticsStatus,
+  listAdminDeliveries,
+  listAdminCouriers,
+  assignDeliveryCourier,
+  getAdminCommissions,
 };

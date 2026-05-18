@@ -11,6 +11,15 @@ const {
   listPendingUsers,
   approveUser,
   rejectUser,
+  listAdminOrders,
+  getAdminOrderDetail,
+  listLogisticsCompanies,
+  getLogisticsCompanyAdmin,
+  updateLogisticsStatus,
+  listAdminDeliveries,
+  listAdminCouriers,
+  assignDeliveryCourier,
+  getAdminCommissions,
 } = require('../controllers/admin.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
@@ -32,5 +41,18 @@ router.patch('/users/:userId/approve', ...adminOnly, approveUser);
 router.patch('/users/:userId/reject', ...adminOnly, rejectUser);
 
 router.post('/couriers', ...adminOnly, createCourier);
+router.get('/couriers', ...adminOnly, listAdminCouriers);
+
+router.get('/orders', ...adminOnly, listAdminOrders);
+router.get('/orders/:orderId', ...adminOnly, getAdminOrderDetail);
+
+router.get('/logistics', ...adminOnly, listLogisticsCompanies);
+router.get('/logistics/:companyId', ...adminOnly, getLogisticsCompanyAdmin);
+router.patch('/logistics/:companyId/status', ...adminOnly, updateLogisticsStatus);
+
+router.get('/deliveries', ...adminOnly, listAdminDeliveries);
+router.patch('/deliveries/:deliveryId/assign', ...adminOnly, assignDeliveryCourier);
+
+router.get('/commissions', ...adminOnly, getAdminCommissions);
 
 module.exports = router;

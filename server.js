@@ -102,10 +102,25 @@ app.use('/api/products', productRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/uploads', uploadRoutes);
 
+function httpErrorCode(status, err) {
+  const raw = err.code;
+  if (raw && typeof raw === 'string' && !/^\d/.test(raw)) {
+    return raw;
+  }
+  if (status === 400) return 'REQUETE_INVALIDE';
+  if (status === 401) return 'NON_AUTORISE';
+  if (status === 403) return 'INTERDIT';
+  if (status === 404) return 'INTROUVABLE';
+  if (status === 409) return 'CONFLIT';
+  if (status === 429) return 'RATE_LIMIT';
+  if (status >= 500) return 'ERREUR_SERVEUR';
+  return 'ERREUR';
+}
+
 app.use((err, _req, res, _next) => {
   const status = err.status || err.statusCode || 500;
   let message = err.message || 'Erreur interne du serveur';
-  let code = err.code || 'ERREUR_INTERNE';
+  let code = httpErrorCode(status, err);
 
   if (!err.status && !err.statusCode && err.code) {
     if (err.code === '23505') {
@@ -197,7 +212,7 @@ async function ensureBaseRoles() {
 async function startServer() {
   if (process.env.NODE_ENV === 'production' && !process.env.CORS_ORIGINS?.trim()) {
     console.warn(
-      '[golivra] CORS_ORIGINS est vide : les navigateurs (requêtes avec en-tête Origin) seront refusés par CORS. Les apps sans Origin (souvent mobile) restent autorisées. Renseignez CORS_ORIGINS pour le web.',
+      '[golivra] CORS_ORIGINS vide : localhost et *.onrender.com restent autorisés. Ajoutez d’autres domaines si besoin (ex. app mobile web).',
     );
   }
   await ensureBaseRoles();

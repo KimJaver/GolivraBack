@@ -17,7 +17,7 @@ function initialModerationStatus() {
   return MODERATION.EN_ATTENTE;
 }
 
-function mapRestaurant(r) {
+function mapRestaurant(r, categorieNom) {
   return {
     id: r.id,
     nom: r.nom,
@@ -30,11 +30,13 @@ function mapRestaurant(r) {
     statut_moderation: r.statut,
     ouvert: r.est_ouvert,
     proprietaire_id: r.proprietaire_id,
+    categorie_id: r.categorie_id,
+    categorie_nom: categorieNom ?? null,
     image_url: null,
   };
 }
 
-function mapBoutique(b) {
+function mapBoutique(b, categorieNom) {
   return {
     id: b.id,
     nom: b.nom,
@@ -47,8 +49,17 @@ function mapBoutique(b) {
     statut_moderation: b.statut,
     ouvert: b.est_ouvert,
     proprietaire_id: b.proprietaire_id,
+    categorie_id: b.categorie_id,
+    categorie_nom: categorieNom ?? null,
     image_url: null,
   };
+}
+
+async function loadCategoryName(db, type, categorieId) {
+  if (!categorieId) return null;
+  const table = type === 'restaurant' ? 'categories_restaurants' : 'categories_boutiques';
+  const { data } = await db.from(table).select('nom').eq('id', categorieId).maybeSingle();
+  return data?.nom ?? null;
 }
 
 function canBypassModerationCheck(req, row) {
@@ -99,6 +110,37 @@ async function listEnterprises(req, res, next) {
   }
 }
 
+async function listCategories(req, res, next) {
+  try {
+    const { type } = req.params;
+    if (!COMMERCE_TYPES.has(type)) {
+      throw createHttpError(400, 'Type invalide (restaurant ou boutique).');
+    }
+    const db = getDb();
+    const table = type === 'restaurant' ? 'categories_restaurants' : 'categories_boutiques';
+    const { data, error } = await db
+      .from(table)
+      .select('id, nom, description, ordre')
+      .eq('est_active', true)
+      .order('ordre', { ascending: true });
+    if (error) throw error;
+    return res.json(data || []);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function resolveCategoryId(db, type, categorieId) {
+  if (!categorieId) {
+    throw createHttpError(400, 'La catégorie est obligatoire.');
+  }
+  const table = type === 'restaurant' ? 'categories_restaurants' : 'categories_boutiques';
+  const { data, error } = await db.from(table).select('id').eq('id', categorieId).eq('est_active', true).maybeSingle();
+  if (error) throw error;
+  if (!data) throw createHttpError(400, 'Catégorie invalide ou inactive.');
+  return data.id;
+}
+
 async function getMyEnterprises(req, res, next) {
   try {
     const db = getDb();
@@ -108,10 +150,15 @@ async function getMyEnterprises(req, res, next) {
     ]);
     if (rRes.error) throw rRes.error;
     if (bRes.error) throw bRes.error;
-    const out = [
-      ...(rRes.data || []).map(mapRestaurant),
-      ...(bRes.data || []).map(mapBoutique),
-    ];
+    const out = [];
+    for (const r of rRes.data || []) {
+      const cat = await loadCategoryName(db, 'restaurant', r.categorie_id);
+      out.push(mapRestaurant(r, cat));
+    }
+    for (const b of bRes.data || []) {
+      const cat = await loadCategoryName(db, 'boutique', b.categorie_id);
+      out.push(mapBoutique(b, cat));
+    }
     out.sort((a, b) => String(a.nom || '').localeCompare(String(b.nom || '')));
     return res.json(out);
   } catch (error) {
@@ -121,8 +168,8 @@ async function getMyEnterprises(req, res, next) {
 
 async function createEnterprise(req, res, next) {
   try {
-    const { nom, type, description, telephone, adresse, latitude, longitude } = req.body;
-    requireFields(req.body, ['nom', 'type', 'telephone', 'adresse']);
+    const { nom, type, description, telephone, adresse, latitude, longitude, categorieId } = req.body;
+    requireFields(req.body, ['nom', 'type', 'telephone', 'adresse', 'categorieId']);
 
     if (!COMMERCE_TYPES.has(type)) {
       throw createHttpError(400, 'Type de commerce invalide (restaurant ou boutique).');
@@ -138,8 +185,10 @@ async function createEnterprise(req, res, next) {
     const statut = initialModerationStatus();
 
     const db = getDb();
+    const resolvedCategoryId = await resolveCategoryId(db, type, categorieId);
     const base = {
       proprietaire_id: req.auth.userId,
+      categorie_id: resolvedCategoryId,
       nom,
       description: description || null,
       telephone,
@@ -197,6 +246,7 @@ async function getEnterpriseById(req, res, next) {
 
 module.exports = {
   listEnterprises,
+  listCategories,
   getEnterpriseById,
   createEnterprise,
   getMyEnterprises,

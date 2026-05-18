@@ -2,6 +2,8 @@ const express = require('express');
 const {
   createOrder,
   getOrders,
+  getVendorOrders,
+  getVendorOrderDetails,
   getOrderDetails,
   updateOrderStatus,
 } = require('../controllers/order.controller');
@@ -11,6 +13,8 @@ const { requireRoles } = require('../middlewares/role.middleware');
 const router = express.Router();
 
 router.get('/', authMiddleware, getOrders);
+router.get('/vendor/mine', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), getVendorOrders);
+router.get('/vendor/:orderId', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), getVendorOrderDetails);
 router.get('/:orderId', authMiddleware, getOrderDetails);
 router.post('/', authMiddleware, requireRoles(['client', 'admin']), createOrder);
 router.patch('/:orderId/status', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), updateOrderStatus);

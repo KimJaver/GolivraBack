@@ -221,6 +221,187 @@ async function createOrder(req, res, next) {
   }
 }
 
+function mapSousStatutToVendor(statut) {
+  switch (statut) {
+    case 'en_attente':
+    case 'acceptee':
+    case 'prete':
+      return 'a_preparer';
+    case 'en_preparation':
+      return 'en_preparation';
+    case 'collectee':
+      return 'en_livraison';
+    case 'livree':
+      return 'livree';
+    case 'annulee':
+    case 'refusee':
+    case 'remboursee':
+      return 'annulee';
+    default:
+      return 'a_preparer';
+  }
+}
+
+function formatDateLabel(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const sameDay =
+      d.getDate() === now.getDate() &&
+      d.getMonth() === now.getMonth() &&
+      d.getFullYear() === now.getFullYear();
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday =
+      d.getDate() === yesterday.getDate() &&
+      d.getMonth() === yesterday.getMonth() &&
+      d.getFullYear() === yesterday.getFullYear();
+    const time = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    if (sameDay) return `Aujourd'hui ${time}`;
+    if (isYesterday) return `Hier ${time}`;
+    return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return iso;
+  }
+}
+
+async function getOwnedEstablishmentIds(db, userId) {
+  const [rRes, bRes] = await Promise.all([
+    db.from('restaurants').select('id').eq('proprietaire_id', userId),
+    db.from('boutiques').select('id').eq('proprietaire_id', userId),
+  ]);
+  if (rRes.error) throw rRes.error;
+  if (bRes.error) throw bRes.error;
+  return {
+    restaurantIds: (rRes.data || []).map((r) => r.id),
+    boutiqueIds: (bRes.data || []).map((b) => b.id),
+  };
+}
+
+async function mapVendorOrderRow(db, sc, commande, client) {
+  const { data: items } = await db.from('sous_commande_items').select('*').eq('sous_commande_id', sc.id);
+  const snap = commande.adresse_livraison_snapshot;
+  let addr = '';
+  if (snap && typeof snap === 'object' && snap.texte) addr = snap.texte;
+  else if (typeof snap === 'string') addr = snap;
+
+  let livreur = null;
+  const { data: livraison } = await db.from('livraisons').select('livreur_id').eq('sous_commande_id', sc.id).maybeSingle();
+  if (livraison?.livreur_id) {
+    const { data: liv } = await db.from('livreurs').select('utilisateur_id').eq('id', livraison.livreur_id).maybeSingle();
+    if (liv?.utilisateur_id) {
+      const { data: u } = await db.from('utilisateurs').select('nom, telephone').eq('id', liv.utilisateur_id).maybeSingle();
+      if (u) livreur = { nom: u.nom || 'Livreur', tel: u.telephone || '' };
+    }
+  }
+
+  return {
+    id: commande.id,
+    sous_commande_id: sc.id,
+    ref: commande.numero || sc.numero,
+    statut: mapSousStatutToVendor(sc.statut),
+    statut_brut: sc.statut,
+    clientNom: client?.nom || 'Client',
+    clientTel: client?.telephone || '',
+    adresse: addr,
+    creeLeLabel: formatDateLabel(commande.created_at),
+    prixTotal: Number(sc.total ?? commande.total ?? 0),
+    fraisLivraison: Number(sc.frais_livraison ?? 0),
+    noteClient: commande.note_client || undefined,
+    lignes: (items || []).map((it) => ({
+      id: it.id,
+      nom: it.nom_produit,
+      detail: it.description_produit || undefined,
+      quantite: it.quantite,
+      prixUnitaire: Number(it.prix_unitaire),
+    })),
+    livreur: livreur || undefined,
+    created_at: commande.created_at,
+  };
+}
+
+async function getVendorOrders(req, res, next) {
+  try {
+    const db = getDb();
+    const { restaurantIds, boutiqueIds } = await getOwnedEstablishmentIds(db, req.auth.userId);
+    if (restaurantIds.length === 0 && boutiqueIds.length === 0) {
+      return res.json([]);
+    }
+
+    let scQuery = db.from('sous_commandes').select('*').order('created_at', { ascending: false });
+    if (restaurantIds.length > 0 && boutiqueIds.length > 0) {
+      scQuery = scQuery.or(
+        `restaurant_id.in.(${restaurantIds.join(',')}),boutique_id.in.(${boutiqueIds.join(',')})`,
+      );
+    } else if (restaurantIds.length > 0) {
+      scQuery = scQuery.in('restaurant_id', restaurantIds);
+    } else {
+      scQuery = scQuery.in('boutique_id', boutiqueIds);
+    }
+
+    const { data: scs, error } = await scQuery;
+    if (error) throw error;
+
+    const commandeIds = [...new Set((scs || []).map((sc) => sc.commande_id))];
+    if (commandeIds.length === 0) return res.json([]);
+
+    const { data: commandes, error: cErr } = await db.from('commandes').select('*').in('id', commandeIds);
+    if (cErr) throw cErr;
+    const commandeMap = new Map((commandes || []).map((c) => [c.id, c]));
+
+    const clientIds = [...new Set((commandes || []).map((c) => c.client_id))];
+    const { data: clients } = clientIds.length
+      ? await db.from('utilisateurs').select('id, nom, telephone').in('id', clientIds)
+      : { data: [] };
+    const clientMap = new Map((clients || []).map((u) => [u.id, u]));
+
+    const out = [];
+    for (const sc of scs || []) {
+      const commande = commandeMap.get(sc.commande_id);
+      if (!commande) continue;
+      const client = clientMap.get(commande.client_id);
+      out.push(await mapVendorOrderRow(db, sc, commande, client));
+    }
+
+    return res.json(out);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getVendorOrderDetails(req, res, next) {
+  try {
+    const { orderId } = req.params;
+    const db = getDb();
+
+    const ownedIds = await findVendorSousCommandeIdsForOrder(db, req.auth.userId, orderId);
+    if (ownedIds.length === 0) throw createHttpError(403, 'Commande introuvable');
+
+    const { data: order, error } = await db.from('commandes').select('*').eq('id', orderId).maybeSingle();
+    if (error) throw error;
+    if (!order) throw createHttpError(404, 'Commande introuvable');
+
+    const { data: scs } = await db
+      .from('sous_commandes')
+      .select('*')
+      .eq('commande_id', orderId)
+      .in('id', ownedIds);
+    const sc = scs && scs[0];
+    if (!sc) throw createHttpError(404, 'Sous-commande introuvable');
+
+    const { data: client } = await db
+      .from('utilisateurs')
+      .select('id, nom, telephone')
+      .eq('id', order.client_id)
+      .maybeSingle();
+
+    return res.json(await mapVendorOrderRow(db, sc, order, client));
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function getOrders(req, res, next) {
   try {
     const db = getDb();
@@ -343,6 +524,8 @@ async function updateOrderStatus(req, res, next) {
 module.exports = {
   createOrder,
   getOrders,
+  getVendorOrders,
+  getVendorOrderDetails,
   getOrderDetails,
   updateOrderStatus,
 };

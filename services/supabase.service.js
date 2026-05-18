@@ -14,41 +14,68 @@ function decodeJwtRole(key) {
 
 /**
  * Vérifie que la clé serveur n'est pas une clé publique (anon / publishable).
- * Erreur fréquente : permission denied for schema public
  */
 function assertServerSecretKey(key, envName) {
   const trimmed = (key || '').trim();
-  if (!trimmed) return;
+  if (!trimmed) {
+    throw new Error(`${envName} est vide.`);
+  }
 
   if (trimmed.startsWith('sb_publishable_')) {
     throw new Error(
       `${envName} contient une clé PUBLIQUE (sb_publishable_…). ` +
-        'Le backend GoLivra doit utiliser la clé SECRÈTE serveur : Supabase → Project Settings → API → ' +
-        '« Secret keys » (sb_secret_…) ou l’ancien JWT « service_role ». Ne jamais mettre la clé publishable côté Render.',
+        'Utilisez la clé SECRÈTE : Supabase → Settings → API → Secret keys (sb_secret_…).',
     );
   }
 
   const jwtRole = decodeJwtRole(trimmed);
   if (jwtRole === 'anon') {
     throw new Error(
-      `${envName} contient un JWT « anon ». Utilisez le JWT « service_role » (clé secrète) depuis Supabase → Settings → API.`,
+      `${envName} contient un JWT « anon ». Utilisez le JWT « service_role » depuis Supabase → Settings → API.`,
     );
   }
 }
 
-function getSupabaseClient() {
-  const url = process.env.SUPABASE_URL;
-  const key =
-    process.env.SUPABASE_SECRET_KEY ||
-    process.env.SUPABASE_SERVICE_KEY;
+function resolveSupabaseServerKey() {
+  const url = (process.env.SUPABASE_URL || '').trim();
+  if (!url) {
+    throw new Error('SUPABASE_URL manquant dans .env (ou variables Render).');
+  }
 
-  if (!url || !key) {
+  const candidates = [
+    ['SUPABASE_SECRET_KEY', process.env.SUPABASE_SECRET_KEY],
+    ['SUPABASE_SERVICE_KEY', process.env.SUPABASE_SERVICE_KEY],
+  ].filter(([, value]) => typeof value === 'string' && value.trim());
+
+  if (candidates.length === 0) {
     throw new Error(
-      'Configuration Supabase manquante (définissez SUPABASE_URL et SUPABASE_SECRET_KEY ou SUPABASE_SERVICE_KEY).',
+      'Aucune clé Supabase serveur : définissez SUPABASE_SECRET_KEY=sb_secret_… dans .env (jamais sb_publishable_…).',
     );
   }
 
-  assertServerSecretKey(key, 'SUPABASE_SECRET_KEY');
+  const failures = [];
+  for (const [envName, raw] of candidates) {
+    const key = raw.trim();
+    try {
+      assertServerSecretKey(key, envName);
+      if (failures.length > 0) {
+        console.warn(`[golivra] Clé valide trouvée dans ${envName} (${failures.length} autre(s) variable(s) ignorée(s)).`);
+      }
+      return { url, key, envName };
+    } catch (err) {
+      failures.push(err.message);
+    }
+  }
+
+  throw new Error(
+    'Clé Supabase invalide : ' +
+      failures.join(' — ') +
+      ' Récupérez sb_secret_… dans Supabase → Project Settings → API → Secret keys.',
+  );
+}
+
+function getSupabaseClient() {
+  const { url, key } = resolveSupabaseServerKey();
 
   return createClient(url, key, {
     auth: {
@@ -61,4 +88,5 @@ function getSupabaseClient() {
 module.exports = {
   getSupabaseClient,
   assertServerSecretKey,
+  resolveSupabaseServerKey,
 };
