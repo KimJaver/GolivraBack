@@ -1,76 +1,221 @@
 const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
 
-const ALLOWED_STATUS = new Set([
-  'commande creee',
-  'en attente vendeur',
+/** Statuts autorisés pour une sous-commande (schéma v3). */
+const ALLOWED_SOUS_STATUT = new Set([
+  'en_attente',
   'acceptee',
-  'en preparation',
+  'refusee',
+  'en_preparation',
   'prete',
-  'en livraison',
+  'collectee',
   'livree',
   'annulee',
-  'probleme',
+  'remboursee',
 ]);
+
+/** Statuts commande principale (admin). */
+const ALLOWED_COMMANDE_STATUT = new Set([
+  'en_attente',
+  'partiellement_acceptee',
+  'acceptee',
+  'en_preparation',
+  'prete',
+  'en_livraison',
+  'livree',
+  'partiellement_livree',
+  'annulee',
+  'remboursee',
+]);
+
+function snapshotAddress(text) {
+  return { texte: text, version: 1 };
+}
+
+function mapCommandeListRow(c, firstEstablishmentId) {
+  const snap = c.adresse_livraison_snapshot;
+  let addr = null;
+  if (snap && typeof snap === 'object' && snap.texte) addr = snap.texte;
+  else if (typeof snap === 'string') addr = snap;
+
+  return {
+    id: c.id,
+    numero: c.numero,
+    entreprise_id: firstEstablishmentId,
+    statut: c.statut,
+    prix_total: c.total,
+    adresse_livraison: addr,
+    cree_le: c.created_at,
+    livree_le: c.livree_at ?? null,
+    created_at: c.created_at,
+    total: c.total,
+  };
+}
+
+async function resolveEstablishmentRow(db, establishmentId, establishmentType) {
+  if (establishmentType === 'restaurant') {
+    const { data, error } = await db.from('restaurants').select('*').eq('id', establishmentId).maybeSingle();
+    if (error) throw error;
+    return data ? { kind: 'restaurant', row: data } : null;
+  }
+  if (establishmentType === 'boutique') {
+    const { data, error } = await db.from('boutiques').select('*').eq('id', establishmentId).maybeSingle();
+    if (error) throw error;
+    return data ? { kind: 'boutique', row: data } : null;
+  }
+  return null;
+}
+
+async function findVendorSousCommandeIdsForOrder(db, userId, commandeId) {
+  const { data: scs, error } = await db
+    .from('sous_commandes')
+    .select('id, restaurant_id, boutique_id')
+    .eq('commande_id', commandeId);
+  if (error) throw error;
+
+  const owned = [];
+  for (const sc of scs || []) {
+    if (sc.restaurant_id) {
+      const { data: r } = await db.from('restaurants').select('proprietaire_id').eq('id', sc.restaurant_id).maybeSingle();
+      if (r?.proprietaire_id === userId) owned.push(sc.id);
+    }
+    if (sc.boutique_id) {
+      const { data: b } = await db.from('boutiques').select('proprietaire_id').eq('id', sc.boutique_id).maybeSingle();
+      if (b?.proprietaire_id === userId) owned.push(sc.id);
+    }
+  }
+  return owned;
+}
 
 async function createOrder(req, res, next) {
   try {
-    const { entrepriseId, articles, adresseLivraison, latitude, longitude } = req.body;
-    requireFields(req.body, ['entrepriseId', 'articles', 'adresseLivraison']);
+    const { entrepriseId, establishmentType, articles, adresseLivraison } = req.body;
+    requireFields(req.body, ['entrepriseId', 'establishmentType', 'articles', 'adresseLivraison']);
     if (!Array.isArray(articles) || articles.length === 0) {
       throw createHttpError(400, 'Le champ articles doit être un tableau non vide');
     }
 
-    const total = articles.reduce((sum, article) => {
-      if (!article.itemId || !article.typeItem || !article.quantite || !article.prixUnitaire) {
-        throw createHttpError(400, 'Chaque article doit inclure itemId, typeItem, quantite et prixUnitaire');
-      }
-      return sum + Number(article.quantite) * Number(article.prixUnitaire);
-    }, 0);
+    if (establishmentType !== 'restaurant' && establishmentType !== 'boutique') {
+      throw createHttpError(400, 'establishmentType doit être restaurant ou boutique');
+    }
 
     const db = getDb();
+    const resolved = await resolveEstablishmentRow(db, entrepriseId, establishmentType);
+    if (!resolved) throw createHttpError(404, 'Commerce introuvable');
+    const { kind, row: ent } = resolved;
 
-    const { data: ent, error: entErr } = await db
-      .from('entreprises')
-      .select('id, statut_moderation, ouvert')
-      .eq('id', entrepriseId)
-      .maybeSingle();
-    if (entErr) throw entErr;
-    if (!ent) throw createHttpError(404, 'Commerce introuvable');
-    if (ent.statut_moderation !== 'active') {
+    if (ent.statut !== 'active') {
       throw createHttpError(403, 'Ce commerce n’est pas encore visible : validation en cours.');
     }
-    if (ent.ouvert !== true) {
+    if (ent.est_ouvert !== true) {
       throw createHttpError(403, 'Ce commerce est temporairement fermé.');
     }
 
-    const { data: order, error } = await db
+    const lines = [];
+    let sousTotal = 0;
+
+    for (const article of articles) {
+      const { itemId, quantite } = article;
+      const q = Math.max(1, Math.floor(Number(quantite)));
+      if (!itemId) throw createHttpError(400, 'Chaque article doit avoir itemId');
+
+      if (kind === 'restaurant') {
+        const { data: plat, error: pErr } = await db.from('plats').select('*').eq('id', itemId).maybeSingle();
+        if (pErr) throw pErr;
+        if (!plat || plat.restaurant_id !== entrepriseId) {
+          throw createHttpError(400, 'Plat invalide pour ce restaurant');
+        }
+        if (!plat.est_disponible) throw createHttpError(400, `Plat indisponible : ${plat.nom}`);
+        const pu = Number(plat.prix);
+        const lineTot = q * pu;
+        sousTotal += lineTot;
+        lines.push({
+          plat_id: plat.id,
+          article_id: null,
+          nom_produit: plat.nom,
+          description_produit: plat.description,
+          options_choisies: null,
+          quantite: q,
+          prix_unitaire: pu,
+          sous_total: lineTot,
+        });
+      } else {
+        const { data: art, error: aErr } = await db.from('articles').select('*').eq('id', itemId).maybeSingle();
+        if (aErr) throw aErr;
+        if (!art || art.boutique_id !== entrepriseId) {
+          throw createHttpError(400, 'Article invalide pour cette boutique');
+        }
+        if (!art.est_disponible) throw createHttpError(400, `Article indisponible : ${art.nom}`);
+        if (art.stock !== null && art.stock !== undefined && q > Number(art.stock)) {
+          throw createHttpError(400, 'Stock insuffisant');
+        }
+        const pu = Number(art.prix);
+        const lineTot = q * pu;
+        sousTotal += lineTot;
+        lines.push({
+          plat_id: null,
+          article_id: art.id,
+          nom_produit: art.nom,
+          description_produit: art.description,
+          options_choisies: null,
+          quantite: q,
+          prix_unitaire: pu,
+          sous_total: lineTot,
+        });
+      }
+    }
+
+    const addrSnap = snapshotAddress(String(adresseLivraison).trim());
+
+    const { data: commande, error: cErr } = await db
       .from('commandes')
       .insert({
-        utilisateur_id: req.auth.userId,
-        entreprise_id: entrepriseId,
-        statut: 'en attente vendeur',
-        prix_total: total,
-        adresse_livraison: adresseLivraison,
-        latitude: latitude || null,
-        longitude: longitude || null,
+        client_id: req.auth.userId,
+        adresse_livraison_snapshot: addrSnap,
+        statut: 'en_attente',
+        sous_total: sousTotal,
+        frais_livraison_total: 0,
+        remise_totale: 0,
+        total: sousTotal,
+        methode_paiement: 'especes',
       })
       .select('*')
       .single();
-    if (error) throw error;
+    if (cErr) throw cErr;
 
-    const orderItems = articles.map((article) => ({
-      commande_id: order.id,
-      item_id: article.itemId,
-      type_item: article.typeItem,
-      quantite: article.quantite,
-      prix: article.prixUnitaire,
+    const scPayload = {
+      commande_id: commande.id,
+      statut: 'en_attente',
+      mode_livraison: 'golivra',
+      sous_total: sousTotal,
+      frais_livraison: 0,
+      remise: 0,
+      total: sousTotal,
+    };
+    if (kind === 'restaurant') scPayload.restaurant_id = entrepriseId;
+    else scPayload.boutique_id = entrepriseId;
+
+    const { data: sous, error: sErr } = await db.from('sous_commandes').insert(scPayload).select('*').single();
+    if (sErr) throw sErr;
+
+    const itemRows = lines.map((l) => ({
+      sous_commande_id: sous.id,
+      plat_id: l.plat_id,
+      article_id: l.article_id,
+      nom_produit: l.nom_produit,
+      description_produit: l.description_produit,
+      options_choisies: l.options_choisies,
+      quantite: l.quantite,
+      prix_unitaire: l.prix_unitaire,
+      sous_total: l.sous_total,
     }));
 
-    const { error: itemsError } = await db.from('commande_articles').insert(orderItems);
-    if (itemsError) throw itemsError;
+    const { error: iErr } = await db.from('sous_commande_items').insert(itemRows);
+    if (iErr) throw iErr;
 
-    return res.status(201).json(order);
+    return res.status(201).json(
+      mapCommandeListRow(commande, entrepriseId)
+    );
   } catch (error) {
     return next(error);
   }
@@ -79,14 +224,26 @@ async function createOrder(req, res, next) {
 async function getOrders(req, res, next) {
   try {
     const db = getDb();
-    const { data, error } = await db
+    const { data: commandes, error } = await db
       .from('commandes')
       .select('*')
-      .eq('utilisateur_id', req.auth.userId)
-      .order('cree_le', { ascending: false });
+      .eq('client_id', req.auth.userId)
+      .order('created_at', { ascending: false });
     if (error) throw error;
 
-    return res.json(data);
+    const out = [];
+    for (const c of commandes || []) {
+      const { data: scs } = await db
+        .from('sous_commandes')
+        .select('restaurant_id, boutique_id')
+        .eq('commande_id', c.id)
+        .limit(1);
+      const first = scs && scs[0];
+      const eid = first ? first.restaurant_id || first.boutique_id : null;
+      out.push(mapCommandeListRow(c, eid));
+    }
+
+    return res.json(out);
   } catch (error) {
     return next(error);
   }
@@ -101,17 +258,30 @@ async function getOrderDetails(req, res, next) {
       .from('commandes')
       .select('*')
       .eq('id', orderId)
-      .eq('utilisateur_id', req.auth.userId)
-      .single();
-    if (error || !order) throw createHttpError(404, 'Commande introuvable');
+      .eq('client_id', req.auth.userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!order) throw createHttpError(404, 'Commande introuvable');
 
-    const { data: articles, error: itemsError } = await db
-      .from('commande_articles')
+    const { data: sousCommandes, error: scErr } = await db
+      .from('sous_commandes')
       .select('*')
       .eq('commande_id', orderId);
-    if (itemsError) throw itemsError;
+    if (scErr) throw scErr;
 
-    return res.json({ ...order, articles });
+    const enriched = [];
+    for (const sc of sousCommandes || []) {
+      const { data: items } = await db.from('sous_commande_items').select('*').eq('sous_commande_id', sc.id);
+      enriched.push({ ...sc, articles: items || [] });
+    }
+
+    const first = sousCommandes && sousCommandes[0];
+    const eid = first ? first.restaurant_id || first.boutique_id : null;
+
+    return res.json({
+      ...mapCommandeListRow(order, eid),
+      sousCommandes: enriched,
+    });
   } catch (error) {
     return next(error);
   }
@@ -120,16 +290,15 @@ async function getOrderDetails(req, res, next) {
 async function updateOrderStatus(req, res, next) {
   try {
     const { orderId } = req.params;
-    const { statut } = req.body;
+    const { statut, sousCommandeId } = req.body;
     requireFields(req.body, ['statut']);
-
-    if (!ALLOWED_STATUS.has(statut)) {
-      throw createHttpError(400, 'Statut de commande non pris en charge');
-    }
 
     const db = getDb();
 
     if (req.auth.role === 'admin') {
+      if (!ALLOWED_COMMANDE_STATUT.has(statut)) {
+        throw createHttpError(400, 'Statut de commande principal non pris en charge');
+      }
       const { data, error } = await db
         .from('commandes')
         .update({ statut })
@@ -140,24 +309,32 @@ async function updateOrderStatus(req, res, next) {
       return res.json(data);
     }
 
-    const { data: ownedEnterprises, error: entError } = await db
-      .from('entreprises')
-      .select('id')
-      .eq('proprietaire_id', req.auth.userId);
-    if (entError) throw entError;
-    const ownedIds = (ownedEnterprises || []).map((row) => row.id);
-    if (ownedIds.length === 0) throw createHttpError(403, 'Aucune entreprise pour ce vendeur');
+    if (!ALLOWED_SOUS_STATUT.has(statut)) {
+      throw createHttpError(400, 'Statut de sous-commande non pris en charge');
+    }
 
-    const { data, error } = await db
-      .from('commandes')
+    const ownedIds = await findVendorSousCommandeIdsForOrder(db, req.auth.userId, orderId);
+    if (ownedIds.length === 0) {
+      throw createHttpError(403, 'Aucune sous-commande pour cet établissement');
+    }
+
+    const targetId = sousCommandeId || (ownedIds.length === 1 ? ownedIds[0] : null);
+    if (!targetId || !ownedIds.includes(targetId)) {
+      throw createHttpError(
+        400,
+        'Indiquez sousCommandeId lorsque la commande contient plusieurs établissements.',
+      );
+    }
+
+    const { data: updated, error } = await db
+      .from('sous_commandes')
       .update({ statut })
-      .eq('id', orderId)
-      .in('entreprise_id', ownedIds)
+      .eq('id', targetId)
       .select('*')
       .single();
-    if (error || !data) throw createHttpError(404, 'Commande introuvable pour cette entreprise');
+    if (error || !updated) throw createHttpError(404, 'Sous-commande introuvable');
 
-    return res.json(data);
+    return res.json(updated);
   } catch (error) {
     return next(error);
   }

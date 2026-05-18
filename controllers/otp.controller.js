@@ -2,6 +2,12 @@ const { sendSms } = require('../services/twilio.service');
 const { getDb } = require('../config/db');
 const { requireFields, createHttpError } = require('../utils/http');
 const { normalizeCgE164 } = require('../utils/phone');
+const {
+  insertOtp,
+  findPendingOtp,
+  deleteOtpByPhoneAndCode,
+  otpTableHint,
+} = require('../services/otp.store');
 
 function buildOtpCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -9,6 +15,14 @@ function buildOtpCode() {
 
 function isOtpTestModeEnabled() {
   return process.env.OTP_TEST_MODE === '1' || process.env.OTP_TEST_MODE === 'true';
+}
+
+function isTwilioConfigured() {
+  const sid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const token = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const messaging = process.env.TWILIO_MESSAGING_SERVICE_SID?.trim();
+  const from = process.env.TWILIO_FROM_NUMBER?.trim();
+  return Boolean(sid && token && (messaging || from));
 }
 
 async function requestOtp(req, res, next) {
@@ -25,22 +39,22 @@ async function requestOtp(req, res, next) {
     }
 
     const code = buildOtpCode();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     const db = getDb();
 
-    const { error } = await db.from('otp_codes').insert({
-      telephone,
-      code,
-      expire_le: expiresAt,
-    });
+    const { error } = await insertOtp(db, { telephone, code, expiresAt });
     if (error) {
       throw createHttpError(
         500,
-        `Impossible de générer le code de vérification. Vérifiez la table otp_codes (détail: ${error.message}).`,
+        `Impossible de générer le code de vérification. Vérifiez la table ${otpTableHint()} sur Supabase (détail: ${error.message}).`,
       );
     }
 
-    if (isOtpTestModeEnabled()) {
+    const testMode = isOtpTestModeEnabled() || !isTwilioConfigured();
+    if (testMode) {
+      if (!isTwilioConfigured()) {
+        console.warn('[golivra] Twilio non configuré — OTP renvoyé en mode test (code visible dans la réponse).');
+      }
       return res.json({
         message: 'Code OTP généré (mode test).',
         testMode: true,
@@ -51,12 +65,11 @@ async function requestOtp(req, res, next) {
     try {
       await sendSms(
         telephone,
-        `GoLivra : votre code de vérification est ${code}. Valide 5 minutes.`,
+        `GoLivra : votre code de vérification est ${code}. Valide 10 minutes.`,
       );
     } catch (smsError) {
-      // Ne pas laisser un OTP "fantôme" en base si le SMS n'est pas parti.
       try {
-        await db.from('otp_codes').delete().eq('telephone', telephone).eq('code', code);
+        await deleteOtpByPhoneAndCode(db, telephone, code);
       } catch (cleanupError) {
         console.warn('Rollback OTP impossible après échec SMS :', cleanupError.message);
       }
@@ -94,17 +107,16 @@ async function verifyOtp(req, res, next) {
     }
 
     const db = getDb();
-    const { data: otpRow, error } = await db
-      .from('otp_codes')
-      .select('id, code, expire_le')
-      .eq('telephone', telephone)
-      .eq('code', code)
-      .order('expire_le', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const { data: otpRow, error } = await findPendingOtp(db, telephone, code);
 
-    if (error || !otpRow) throw createHttpError(400, 'Code de vérification introuvable ou incorrect');
-    if (new Date(otpRow.expire_le) <= new Date()) throw createHttpError(400, 'Le code de vérification a expiré');
+    if (error) {
+      throw createHttpError(
+        500,
+        `Erreur de lecture OTP (table ${otpTableHint()}). Détail: ${error.message}`,
+      );
+    }
+    if (!otpRow) throw createHttpError(400, 'Code de vérification introuvable ou incorrect');
+    if (new Date(otpRow.expire_at) <= new Date()) throw createHttpError(400, 'Le code de vérification a expiré');
     if (String(otpRow.code) !== String(code)) throw createHttpError(400, 'Code de vérification incorrect');
 
     return res.json({ verified: true });

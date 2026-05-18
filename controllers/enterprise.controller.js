@@ -6,7 +6,7 @@ const COMMERCE_TYPES = new Set(['restaurant', 'boutique']);
 const MODERATION = {
   EN_ATTENTE: 'en_attente',
   ACTIVE: 'active',
-  SUSPENDU: 'suspendu',
+  SUSPENDUE: 'suspendue',
 };
 
 function initialModerationStatus() {
@@ -17,39 +17,83 @@ function initialModerationStatus() {
   return MODERATION.EN_ATTENTE;
 }
 
-function canBypassModerationCheck(req, enterprise) {
-  if (!req.auth || !enterprise) return false;
+function mapRestaurant(r) {
+  return {
+    id: r.id,
+    nom: r.nom,
+    type: 'restaurant',
+    description: r.description,
+    telephone: r.telephone,
+    adresse: r.adresse_ligne1,
+    latitude: r.latitude,
+    longitude: r.longitude,
+    statut_moderation: r.statut,
+    ouvert: r.est_ouvert,
+    proprietaire_id: r.proprietaire_id,
+    image_url: null,
+  };
+}
+
+function mapBoutique(b) {
+  return {
+    id: b.id,
+    nom: b.nom,
+    type: 'boutique',
+    description: b.description,
+    telephone: b.telephone,
+    adresse: b.adresse_ligne1,
+    latitude: b.latitude,
+    longitude: b.longitude,
+    statut_moderation: b.statut,
+    ouvert: b.est_ouvert,
+    proprietaire_id: b.proprietaire_id,
+    image_url: null,
+  };
+}
+
+function canBypassModerationCheck(req, row) {
+  if (!req.auth || !row) return false;
   if (req.auth.role === 'admin') return true;
-  if (enterprise.proprietaire_id && enterprise.proprietaire_id === req.auth.userId) return true;
+  if (row.proprietaire_id && row.proprietaire_id === req.auth.userId) return true;
   return false;
 }
 
-function isEnterprisePubliclyVisible(enterprise) {
-  return (
-    enterprise &&
-    enterprise.statut_moderation === MODERATION.ACTIVE &&
-    enterprise.ouvert === true
-  );
+function isPubliclyVisible(row) {
+  return row && row.statut === MODERATION.ACTIVE && row.est_ouvert === true;
 }
 
 async function listEnterprises(req, res, next) {
   try {
     const { type } = req.query;
     const db = getDb();
-    let query = db
-      .from('entreprises')
-      .select('*')
-      .eq('ouvert', true)
-      .eq('statut_moderation', MODERATION.ACTIVE)
-      .order('nom', { ascending: true });
+    const out = [];
 
-    if (type) {
-      query = query.eq('type', type);
+    if (!type || type === 'restaurant') {
+      let q = db
+        .from('restaurants')
+        .select('*')
+        .eq('est_ouvert', true)
+        .eq('statut', MODERATION.ACTIVE)
+        .order('nom', { ascending: true });
+      const { data, error } = await q;
+      if (error) throw error;
+      (data || []).forEach((r) => out.push(mapRestaurant(r)));
     }
 
-    const { data, error } = await query;
-    if (error) throw error;
-    return res.json(data);
+    if (!type || type === 'boutique') {
+      let q = db
+        .from('boutiques')
+        .select('*')
+        .eq('est_ouvert', true)
+        .eq('statut', MODERATION.ACTIVE)
+        .order('nom', { ascending: true });
+      const { data, error } = await q;
+      if (error) throw error;
+      (data || []).forEach((b) => out.push(mapBoutique(b)));
+    }
+
+    out.sort((a, b) => String(a.nom || '').localeCompare(String(b.nom || '')));
+    return res.json(out);
   } catch (error) {
     return next(error);
   }
@@ -58,13 +102,18 @@ async function listEnterprises(req, res, next) {
 async function getMyEnterprises(req, res, next) {
   try {
     const db = getDb();
-    const { data, error } = await db
-      .from('entreprises')
-      .select('*')
-      .eq('proprietaire_id', req.auth.userId)
-      .order('nom', { ascending: true });
-    if (error) throw error;
-    return res.json(data || []);
+    const [rRes, bRes] = await Promise.all([
+      db.from('restaurants').select('*').eq('proprietaire_id', req.auth.userId).order('nom', { ascending: true }),
+      db.from('boutiques').select('*').eq('proprietaire_id', req.auth.userId).order('nom', { ascending: true }),
+    ]);
+    if (rRes.error) throw rRes.error;
+    if (bRes.error) throw bRes.error;
+    const out = [
+      ...(rRes.data || []).map(mapRestaurant),
+      ...(bRes.data || []).map(mapBoutique),
+    ];
+    out.sort((a, b) => String(a.nom || '').localeCompare(String(b.nom || '')));
+    return res.json(out);
   } catch (error) {
     return next(error);
   }
@@ -72,35 +121,44 @@ async function getMyEnterprises(req, res, next) {
 
 async function createEnterprise(req, res, next) {
   try {
-    const { nom, type, description, telephone, adresse, latitude, longitude, imageUrl } = req.body;
+    const { nom, type, description, telephone, adresse, latitude, longitude } = req.body;
     requireFields(req.body, ['nom', 'type', 'telephone', 'adresse']);
 
     if (!COMMERCE_TYPES.has(type)) {
       throw createHttpError(400, 'Type de commerce invalide (restaurant ou boutique).');
     }
 
-    const statutModeration = initialModerationStatus();
+    if (type === 'restaurant' && req.auth.role !== 'restaurateur' && req.auth.role !== 'admin') {
+      throw createHttpError(403, 'Seuls les comptes restaurateur peuvent créer un restaurant.');
+    }
+    if (type === 'boutique' && req.auth.role !== 'commercant' && req.auth.role !== 'admin') {
+      throw createHttpError(403, 'Seuls les comptes commerçant peuvent créer une boutique.');
+    }
+
+    const statut = initialModerationStatus();
 
     const db = getDb();
-    const { data, error } = await db
-      .from('entreprises')
-      .insert({
-        proprietaire_id: req.auth.userId,
-        nom,
-        type,
-        description: description || null,
-        telephone,
-        adresse,
-        image_url: imageUrl || null,
-        latitude: latitude || null,
-        longitude: longitude || null,
-        statut_moderation: statutModeration,
-      })
-      .select('*')
-      .single();
-    if (error) throw error;
+    const base = {
+      proprietaire_id: req.auth.userId,
+      nom,
+      description: description || null,
+      telephone,
+      adresse_ligne1: adresse,
+      latitude: latitude ?? null,
+      longitude: longitude ?? null,
+      statut,
+      est_ouvert: statut === MODERATION.ACTIVE,
+    };
 
-    return res.status(201).json(data);
+    if (type === 'restaurant') {
+      const { data, error } = await db.from('restaurants').insert(base).select('*').single();
+      if (error) throw error;
+      return res.status(201).json(mapRestaurant(data));
+    }
+
+    const { data, error } = await db.from('boutiques').insert(base).select('*').single();
+    if (error) throw error;
+    return res.status(201).json(mapBoutique(data));
   } catch (error) {
     return next(error);
   }
@@ -110,15 +168,28 @@ async function getEnterpriseById(req, res, next) {
   try {
     const { enterpriseId } = req.params;
     const db = getDb();
-    const { data, error } = await db.from('entreprises').select('*').eq('id', enterpriseId).maybeSingle();
-    if (error) throw error;
-    if (!data) throw createHttpError(404, 'Commerce introuvable ou fermé.');
 
-    if (!isEnterprisePubliclyVisible(data) && !canBypassModerationCheck(req, data)) {
+    const { data: resto, error: rErr } = await db.from('restaurants').select('*').eq('id', enterpriseId).maybeSingle();
+    if (rErr) throw rErr;
+    if (resto) {
+      const mapped = mapRestaurant(resto);
+      if (isPubliclyVisible(resto) || canBypassModerationCheck(req, resto)) {
+        return res.json(mapped);
+      }
       throw createHttpError(404, 'Commerce introuvable ou fermé.');
     }
 
-    return res.json(data);
+    const { data: bout, error: bErr } = await db.from('boutiques').select('*').eq('id', enterpriseId).maybeSingle();
+    if (bErr) throw bErr;
+    if (bout) {
+      const mapped = mapBoutique(bout);
+      if (isPubliclyVisible(bout) || canBypassModerationCheck(req, bout)) {
+        return res.json(mapped);
+      }
+      throw createHttpError(404, 'Commerce introuvable ou fermé.');
+    }
+
+    throw createHttpError(404, 'Commerce introuvable ou fermé.');
   } catch (error) {
     return next(error);
   }

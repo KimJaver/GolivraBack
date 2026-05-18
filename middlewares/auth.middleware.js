@@ -1,4 +1,5 @@
 const { getDb } = require('../config/db');
+const { hashSessionToken } = require('../utils/token');
 
 async function authMiddleware(req, res, next) {
   try {
@@ -8,19 +9,24 @@ async function authMiddleware(req, res, next) {
     }
 
     const token = authHeader.replace('Bearer ', '').trim();
+    const tokenHash = hashSessionToken(token);
     const db = getDb();
 
     const { data: session, error } = await db
       .from('sessions')
-      .select('id, utilisateur_id, expire_le')
-      .eq('token', token)
-      .single();
+      .select('id, utilisateur_id, expire_at, revoque')
+      .eq('token_hash', tokenHash)
+      .maybeSingle();
 
     if (error || !session) {
       return res.status(401).json({ message: 'Jeton de session invalide' });
     }
 
-    if (new Date(session.expire_le) <= new Date()) {
+    if (session.revoque) {
+      return res.status(401).json({ message: 'Session révoquée' });
+    }
+
+    if (new Date(session.expire_at) <= new Date()) {
       return res.status(401).json({ message: 'Session expirée' });
     }
 
@@ -58,15 +64,16 @@ async function optionalAuthMiddleware(req, res, next) {
     }
 
     const token = authHeader.replace('Bearer ', '').trim();
+    const tokenHash = hashSessionToken(token);
     const db = getDb();
 
     const { data: session, error } = await db
       .from('sessions')
-      .select('id, utilisateur_id, expire_le')
-      .eq('token', token)
-      .single();
+      .select('id, utilisateur_id, expire_at, revoque')
+      .eq('token_hash', tokenHash)
+      .maybeSingle();
 
-    if (error || !session || new Date(session.expire_le) <= new Date()) {
+    if (error || !session || session.revoque || new Date(session.expire_at) <= new Date()) {
       return next();
     }
 

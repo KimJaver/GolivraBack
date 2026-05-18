@@ -11,8 +11,8 @@ const { requireRoles } = require('../middlewares/role.middleware');
 const router = express.Router();
 
 router.get('/', listEnterprises);
-router.get('/mine', authMiddleware, requireRoles(['vendeur', 'admin']), getMyEnterprises);
+router.get('/mine', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), getMyEnterprises);
 router.get('/:enterpriseId', optionalAuthMiddleware, getEnterpriseById);
-router.post('/', authMiddleware, requireRoles(['vendeur', 'admin']), createEnterprise);
+router.post('/', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), createEnterprise);
 
 module.exports = router;

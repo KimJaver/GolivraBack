@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "seed:admin": "node scripts/seed-admin.js",
     "test": "echo \"No tests yet\""
   },
   "keywords": [],

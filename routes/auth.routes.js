@@ -1,11 +1,12 @@
 const express = require('express');
-const { register, login, me, logout, updateProfile, changePassword } = require('../controllers/auth.controller');
+const { register, login, staffLogin, me, logout, updateProfile, changePassword } = require('../controllers/auth.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
 
 const router = express.Router();
 
 router.post('/register', register);
 router.post('/login', login);
+router.post('/staff/login', staffLogin);
 router.get('/me', authMiddleware, me);
 router.patch('/me', authMiddleware, updateProfile);
 router.post('/change-password', authMiddleware, changePassword);

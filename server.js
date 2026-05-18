@@ -11,6 +11,7 @@ const deliveryRoutes = require('./routes/delivery.routes');
 const enterpriseRoutes = require('./routes/enterprise.routes');
 const productRoutes = require('./routes/product.routes');
 const adminRoutes = require('./routes/admin.routes');
+const uploadRoutes = require('./routes/upload.routes');
 const { getDb } = require('./config/db');
 
 const app = express();
@@ -84,6 +85,7 @@ app.use('/api/delivery', deliveryRoutes);
 app.use('/api/enterprises', enterpriseRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/uploads', uploadRoutes);
 
 app.use((err, _req, res, _next) => {
   const status = err.status || err.statusCode || 500;
@@ -111,12 +113,23 @@ app.use((err, _req, res, _next) => {
 
 async function ensureBaseRoles() {
   const db = getDb();
-  const requiredRoles = ['client', 'vendeur', 'admin', 'livreur'];
+  try {
+    const { error } = await db.rpc('ensure_base_roles');
+    if (!error) return;
+    console.warn('[golivra] RPC ensure_base_roles indisponible, insertion manuelle des rôles :', error.message);
+  } catch (e) {
+    console.warn('[golivra] RPC ensure_base_roles exception :', e.message);
+  }
 
+  const requiredRoles = ['client', 'restaurateur', 'commercant', 'admin', 'livreur'];
   for (const roleName of requiredRoles) {
     const { data } = await db.from('roles').select('id').eq('nom', roleName).maybeSingle();
     if (!data) {
-      await db.from('roles').insert({ nom: roleName });
+      const { error: insErr } = await db.from('roles').insert({
+        nom: roleName,
+        description: roleName,
+      });
+      if (insErr) console.warn(`[golivra] Impossible d'insérer le rôle ${roleName}:`, insErr.message);
     }
   }
 }

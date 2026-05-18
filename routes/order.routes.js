@@ -13,6 +13,6 @@ const router = express.Router();
 router.get('/', authMiddleware, getOrders);
 router.get('/:orderId', authMiddleware, getOrderDetails);
 router.post('/', authMiddleware, requireRoles(['client', 'admin']), createOrder);
-router.patch('/:orderId/status', authMiddleware, requireRoles(['vendeur', 'admin']), updateOrderStatus);
+router.patch('/:orderId/status', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), updateOrderStatus);
 
 module.exports = router;

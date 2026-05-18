@@ -6,6 +6,6 @@ const { requireRoles } = require('../middlewares/role.middleware');
 const router = express.Router();
 
 router.get('/enterprise/:enterpriseId', optionalAuthMiddleware, listProducts);
-router.post('/enterprise/:enterpriseId', authMiddleware, requireRoles(['vendeur', 'admin']), createProduct);
+router.post('/enterprise/:enterpriseId', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), createProduct);
 
 module.exports = router;
