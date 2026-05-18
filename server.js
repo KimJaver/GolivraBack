@@ -27,10 +27,25 @@ app.use(
   }),
 );
 
+function isLocalDevOrigin(origin) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(origin);
+}
+
+/** Apps GoLivra hébergées sur Render (admin, vitrine, etc.). */
+function isRenderAppOrigin(origin) {
+  return /^https:\/\/[\w-]+\.onrender\.com$/i.test(origin);
+}
+
 const corsOptions = {
   credentials: true,
   origin(origin, callback) {
     if (!origin) {
+      return callback(null, true);
+    }
+    if (isLocalDevOrigin(origin)) {
+      return callback(null, true);
+    }
+    if (isRenderAppOrigin(origin)) {
       return callback(null, true);
     }
     const raw = process.env.CORS_ORIGINS;
@@ -111,6 +126,51 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ message, code });
 });
 
+const RESTAURANT_CATEGORIES = [
+  ['Restaurant africain', 1],
+  ['Fast Food', 2],
+  ['Grillades & Brochettes', 3],
+  ['Pizza & Pasta', 4],
+  ['Boulangerie & Pâtisserie', 5],
+  ['Jus & Boissons', 6],
+  ['Cuisine asiatique', 7],
+  ['Végétarien', 8],
+  ['Autre', 99],
+];
+
+const BOUTIQUE_CATEGORIES = [
+  ['Épicerie & Alimentation', 1],
+  ['Pharmacie', 2],
+  ['Supermarché', 3],
+  ['Mode & Vêtements', 4],
+  ['Électronique', 5],
+  ['Beauté & Soins', 6],
+  ['Maison & Déco', 7],
+  ['Librairie & Papeterie', 8],
+  ['Sport', 9],
+  ['Autre', 99],
+];
+
+async function ensureCategoryRows(db, table, rows) {
+  for (const [nom, ordre] of rows) {
+    const { data } = await db.from(table).select('id').eq('nom', nom).maybeSingle();
+    if (!data) {
+      const { error } = await db.from(table).insert({ nom, ordre, est_active: true });
+      if (error) console.warn(`[golivra] Impossible d'insérer la catégorie ${nom} (${table}):`, error.message);
+    }
+  }
+}
+
+async function ensureBaseCategories() {
+  const db = getDb();
+  try {
+    await ensureCategoryRows(db, 'categories_restaurants', RESTAURANT_CATEGORIES);
+    await ensureCategoryRows(db, 'categories_boutiques', BOUTIQUE_CATEGORIES);
+  } catch (e) {
+    console.warn('[golivra] ensureBaseCategories:', e.message);
+  }
+}
+
 async function ensureBaseRoles() {
   const db = getDb();
   try {
@@ -141,6 +201,7 @@ async function startServer() {
     );
   }
   await ensureBaseRoles();
+  await ensureBaseCategories();
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     const env = process.env.NODE_ENV || 'development';
