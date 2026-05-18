@@ -10,7 +10,7 @@ Après chaque modification du code : enregistrer les changements puis pousser su
 
 - Node.js **20+** (recommandé : **22**)
 - Un projet [Supabase](https://supabase.com/) avec le schéma appliqué (`schema.sql` à la racine du dépôt). Si la base existait avant l’ajout de `entreprises.image_url`, exécuter : `ALTER TABLE entreprises ADD COLUMN IF NOT EXISTS image_url TEXT;`
-- Compte [Twilio](https://www.twilio.com/) pour l’envoi des SMS OTP (optionnel en dev si vous acceptez que l’OTP soit quand même enregistré en base sans SMS)
+- Compte [Twilio](https://www.twilio.com/) pour l’envoi des SMS OTP (**optionnel** : sans Twilio, utilisez `OTP_TEST_MODE=1` — voir ci-dessous)
 
 ## Installation locale
 
@@ -38,6 +38,23 @@ Santé de l’API : `GET http://localhost:3000/health`
 | `CORS_ORIGINS` | Origines web autorisées (virgules). En **production**, si vide : les navigateurs (requête avec `Origin`) sont **refusés** par CORS ; sans `Origin` (souvent l’app native) reste autorisé. |
 | `RATE_LIMIT_MAX` | (Optionnel) Requêtes max / IP / 15 min, hors `GET /health`. Défaut : `200`. |
 | `RATE_LIMIT_OTP_MAX` | (Optionnel) Requêtes max sur `/api/otp/*` / IP / 15 min. Défaut : `30`. |
+| `OTP_TEST_MODE` | `1` = code OTP renvoyé dans la réponse JSON (pas de SMS). **Recommandé sans Twilio.** Mettre `0` quand Twilio est configuré. |
+| `OTP_TABLE` | (Optionnel) Forcer `otp` ou `otp_codes`. Par défaut : détection automatique. |
+| `SUPABASE_STORAGE_BUCKET` | Bucket Storage pour les images (`public` par défaut). Créer le bucket via `sql/fix-otp-and-storage.sql`. |
+| `ENTERPRISE_AUTO_APPROVE` | `1` = commerces actifs à la création (démo). `0` = modération admin (production). |
+
+## OTP sans Twilio (phase de test)
+
+Tant que vous n’avez **pas encore payé / configuré Twilio** :
+
+1. Sur **Render** → Environment → `OTP_TEST_MODE` = **`1`** (déjà dans `render.yaml`).
+2. L’app appelle `POST /api/otp/request` → la réponse contient `testMode: true` et **`otpCode`** (ex. `"482913"`).
+3. L’écran d’inscription mobile affiche : *« Mode test actif - code OTP: … »*.
+4. Aucune variable `TWILIO_*` n’est requise.
+
+Quand Twilio sera prêt : renseignez `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, et `TWILIO_MESSAGING_SERVICE_SID` ou `TWILIO_FROM_NUMBER`, puis passez **`OTP_TEST_MODE=0`** sur Render.
+
+Exécutez aussi sur Supabase : `sql/fix-otp-and-storage.sql` (tables OTP + bucket images).
 
 ## Sécurité (production)
 

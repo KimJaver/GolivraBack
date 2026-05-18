@@ -15,12 +15,19 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Sans Twilio payé : le code OTP est renvoyé dans la réponse API (mode test).
+      # Quand Twilio est prêt : mettre OTP_TEST_MODE=0 et renseigner TWILIO_* ci-dessous.
+      - key: OTP_TEST_MODE
+        value: "1"
+      - key: SUPABASE_STORAGE_BUCKET
+        value: public
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SECRET_KEY
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      # Twilio — optionnel tant que OTP_TEST_MODE=1 (inscription via code affiché dans l’app)
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
