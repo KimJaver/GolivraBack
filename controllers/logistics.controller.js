@@ -7,6 +7,8 @@ const {
   createCourierForCompany,
   suspendCourier,
   activateCourier,
+  setCourierAvailability,
+  getCourierDetailForCompany,
   mapCourierPublic,
   listDeliveriesForLogisticsCompany,
   assignDeliveryForLogisticsCompany,
@@ -77,6 +79,34 @@ async function getMyDelays(req, res, next) {
     const db = getDb();
     const delays = await getDelaysForCompany(db, company.id);
     return res.json(delays);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getMyCourier(req, res, next) {
+  try {
+    const { livreurId } = req.params;
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const detail = await getCourierDetailForCompany(db, company.id, livreurId);
+    return res.json(detail);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function updateMyCourierAvailability(req, res, next) {
+  try {
+    const { livreurId } = req.params;
+    const { disponible } = req.body || {};
+    if (typeof disponible !== 'boolean') {
+      throw createHttpError(400, 'Indiquez disponible: true ou false.');
+    }
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const row = await setCourierAvailability(db, livreurId, company.id, disponible);
+    return res.json(mapCourierPublic(row));
   } catch (error) {
     return next(error);
   }
@@ -170,6 +200,8 @@ module.exports = {
   getMyOperations,
   getMyDelays,
   listMyCouriers,
+  getMyCourier,
+  updateMyCourierAvailability,
   createMyCourier,
   suspendMyCourier,
   activateMyCourier,

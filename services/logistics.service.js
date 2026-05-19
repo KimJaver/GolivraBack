@@ -340,6 +340,58 @@ async function activateCourier(db, livreurId, companyId) {
   return getLivreurInCompany(db, livreurId, companyId);
 }
 
+async function setCourierAvailability(db, livreurId, companyId, disponible) {
+  const livreur = await getLivreurInCompany(db, livreurId, companyId);
+  if (livreur.utilisateur?.est_actif === false) {
+    throw createHttpError(400, 'Impossible de modifier la disponibilité d\'un compte suspendu.');
+  }
+
+  const { data, error } = await db
+    .from('livreurs')
+    .update({ est_disponible: Boolean(disponible) })
+    .eq('id', livreurId)
+    .eq('entreprise_logistique_id', companyId)
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  return getLivreurInCompany(db, livreurId, companyId);
+}
+
+async function getCourierDetailForCompany(db, companyId, livreurId) {
+  const livreur = await getLivreurInCompany(db, livreurId, companyId);
+  const publicRow = mapCourierPublic(livreur);
+
+  const { data: livraisons, error } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('livreur_id', livreurId)
+    .order('created_at', { ascending: false })
+    .limit(25);
+  if (error) throw error;
+
+  const recent = [];
+  for (const liv of livraisons || []) {
+    recent.push(await mapDeliveryRow(db, liv));
+  }
+
+  const livrees = recent.filter((d) => d.statut === 'livree').length;
+  const enCours = recent.filter((d) => d.statut !== 'livree' && d.statut !== 'annulee').length;
+
+  return {
+    ...publicRow,
+    compte_actif: livreur.utilisateur?.est_actif !== false,
+    livraisons_recentes: recent,
+    resume: {
+      total_historique: Number(livreur.nb_livraisons_total ?? 0),
+      reussies_historique: Number(livreur.nb_livraisons_reussies ?? 0),
+      recentes_total: recent.length,
+      recentes_livrees: livrees,
+      recentes_en_cours: enCours,
+    },
+  };
+}
+
 async function getCourierIdsForCompany(db, companyId) {
   const { data: livreurs, error } = await db
     .from('livreurs')
@@ -592,6 +644,8 @@ module.exports = {
   createCourierForCompany,
   suspendCourier,
   activateCourier,
+  setCourierAvailability,
+  getCourierDetailForCompany,
   mapCourierPublic,
   listDeliveriesForLogisticsCompany,
   assignDeliveryForLogisticsCompany,

@@ -5,6 +5,8 @@ const {
   getMyOperations,
   getMyDelays,
   listMyCouriers,
+  getMyCourier,
+  updateMyCourierAvailability,
   createMyCourier,
   suspendMyCourier,
   activateMyCourier,
@@ -35,8 +37,10 @@ router.get('/operations', ...gestionnaireBase, getMyOperations);
 router.get('/retards', ...gestionnaireBase, getMyDelays);
 
 router.get('/livreurs', ...gestionnaireBase, listMyCouriers);
+router.get('/livreurs/:livreurId', ...gestionnaireBase, getMyCourier);
 router.get('/livraisons', ...gestionnaireBase, listMyDeliveries);
 router.post('/livreurs', ...gestionnaireActive, createMyCourier);
+router.patch('/livreurs/:livreurId/disponibilite', ...gestionnaireActive, updateMyCourierAvailability);
 router.patch('/livreurs/:livreurId/suspend', ...gestionnaireActive, suspendMyCourier);
 router.patch('/livreurs/:livreurId/activate', ...gestionnaireActive, activateMyCourier);
 router.patch('/livraisons/:deliveryId/assign', ...gestionnaireActive, assignMyDelivery);
