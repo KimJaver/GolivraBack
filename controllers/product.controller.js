@@ -18,22 +18,25 @@ function canManageEstablishment(req, row) {
 }
 
 function mapPlatToProduct(p, enterpriseId) {
-  const stock = p.est_disponible ? 999 : 0;
+  const stock = p.est_disponible ? (p.stock ?? 999) : 0;
   return {
     id: p.id,
     entreprise_id: enterpriseId,
     nom: p.nom,
     description: p.description,
     prix: p.prix,
-    stock,
-    image_url: null,
+    stock: typeof p.stock === 'number' ? p.stock : stock,
+    est_disponible: p.est_disponible !== false,
+    image_url: p.image_url ?? null,
     kind: 'plat',
+    options: p.options ?? null,
   };
 }
 
 function mapArticleToProduct(a, enterpriseId) {
   let stock = 999;
   if (a.stock !== null && a.stock !== undefined) stock = Math.max(0, Number(a.stock));
+  if (!a.est_disponible) stock = 0;
   return {
     id: a.id,
     entreprise_id: enterpriseId,
@@ -41,9 +44,37 @@ function mapArticleToProduct(a, enterpriseId) {
     description: a.description,
     prix: a.prix,
     stock,
-    image_url: null,
+    est_disponible: a.est_disponible !== false,
+    image_url: a.image_url ?? null,
     kind: 'article',
+    options: a.options ?? null,
+    reference: a.reference ?? null,
   };
+}
+
+function parseImageUrl(imageUrl) {
+  return typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
+}
+
+async function findProductInEstablishment(db, kind, enterpriseId, productId) {
+  if (kind === 'restaurant') {
+    const { data, error } = await db
+      .from('plats')
+      .select('*')
+      .eq('id', productId)
+      .eq('restaurant_id', enterpriseId)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+  const { data, error } = await db
+    .from('articles')
+    .select('*')
+    .eq('id', productId)
+    .eq('boutique_id', enterpriseId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
 }
 
 async function listProducts(req, res, next) {
@@ -85,8 +116,9 @@ async function listProducts(req, res, next) {
 async function createProduct(req, res, next) {
   try {
     const { enterpriseId } = req.params;
-    const { nom, description, prix, stock } = req.body;
+    const { nom, description, prix, stock, imageUrl } = req.body;
     requireFields(req.body, ['nom', 'prix']);
+    const imgUrl = parseImageUrl(imageUrl);
 
     const db = getDb();
     const resolved = await resolveEstablishment(db, enterpriseId);
@@ -108,6 +140,7 @@ async function createProduct(req, res, next) {
           description: description || null,
           prix: prixNum,
           est_disponible: true,
+          image_url: imgUrl,
         })
         .select('*')
         .single();
@@ -131,6 +164,7 @@ async function createProduct(req, res, next) {
         prix: prixNum,
         stock: stockVal,
         est_disponible: true,
+        image_url: imgUrl,
       })
       .select('*')
       .single();
@@ -141,7 +175,83 @@ async function createProduct(req, res, next) {
   }
 }
 
+async function updateProduct(req, res, next) {
+  try {
+    const { enterpriseId, productId } = req.params;
+    const { nom, description, prix, stock, imageUrl, estDisponible } = req.body;
+
+    const db = getDb();
+    const resolved = await resolveEstablishment(db, enterpriseId);
+    if (!resolved) throw createHttpError(404, 'Établissement introuvable');
+
+    const { kind, row } = resolved;
+    if (!canManageEstablishment(req, row)) throw createHttpError(403, 'Action non autorisée pour cet établissement');
+
+    const existing = await findProductInEstablishment(db, kind, enterpriseId, productId);
+    if (!existing) throw createHttpError(404, 'Produit introuvable');
+
+    if (kind === 'restaurant') {
+      if (req.auth.role !== 'admin' && req.auth.role !== 'restaurateur') {
+        throw createHttpError(403, 'Seul un restaurateur peut modifier des plats.');
+      }
+      const patch = {};
+      if (nom !== undefined) patch.nom = String(nom).trim();
+      if (description !== undefined) patch.description = description || null;
+      if (prix !== undefined) patch.prix = Number(prix);
+      if (imageUrl !== undefined) patch.image_url = parseImageUrl(imageUrl);
+      if (estDisponible !== undefined) patch.est_disponible = Boolean(estDisponible);
+
+      const { data, error } = await db.from('plats').update(patch).eq('id', productId).select('*').single();
+      if (error) throw error;
+      return res.json(mapPlatToProduct(data, enterpriseId));
+    }
+
+    if (req.auth.role !== 'admin' && req.auth.role !== 'commercant') {
+      throw createHttpError(403, 'Seul un commerçant peut modifier des articles.');
+    }
+    const patch = {};
+    if (nom !== undefined) patch.nom = String(nom).trim();
+    if (description !== undefined) patch.description = description || null;
+    if (prix !== undefined) patch.prix = Number(prix);
+    if (imageUrl !== undefined) patch.image_url = parseImageUrl(imageUrl);
+    if (estDisponible !== undefined) patch.est_disponible = Boolean(estDisponible);
+    if (stock !== undefined) {
+      patch.stock = stock === null ? null : Math.max(0, Math.floor(Number(stock)));
+    }
+
+    const { data, error } = await db.from('articles').update(patch).eq('id', productId).select('*').single();
+    if (error) throw error;
+    return res.json(mapArticleToProduct(data, enterpriseId));
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function deleteProduct(req, res, next) {
+  try {
+    const { enterpriseId, productId } = req.params;
+    const db = getDb();
+    const resolved = await resolveEstablishment(db, enterpriseId);
+    if (!resolved) throw createHttpError(404, 'Établissement introuvable');
+
+    const { kind, row } = resolved;
+    if (!canManageEstablishment(req, row)) throw createHttpError(403, 'Action non autorisée pour cet établissement');
+
+    const existing = await findProductInEstablishment(db, kind, enterpriseId, productId);
+    if (!existing) throw createHttpError(404, 'Produit introuvable');
+
+    const table = kind === 'restaurant' ? 'plats' : 'articles';
+    const { error } = await db.from(table).delete().eq('id', productId);
+    if (error) throw error;
+    return res.status(204).send();
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   listProducts,
   createProduct,
+  updateProduct,
+  deleteProduct,
 };

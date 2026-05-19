@@ -902,7 +902,6 @@ async function getAdminCommissions(req, res, next) {
 }
 
 module.exports = {
-  createCourier,
   getAdminStats,
   listAllEnterprises,
   listEnterprisesPending,
@@ -918,12 +917,7 @@ module.exports = {
   listLogisticsCompanies,
   getLogisticsCompanyAdmin,
   createLogisticsCompany,
-  createLogisticsCourier,
-  suspendLogisticsCourier,
-  activateLogisticsCourier,
   updateLogisticsStatus,
   listAdminDeliveries,
-  listAdminCouriers,
-  assignDeliveryCourier,
   getAdminCommissions,
 };

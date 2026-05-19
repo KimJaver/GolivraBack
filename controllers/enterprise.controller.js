@@ -1,5 +1,6 @@
 const { getDb } = require('../config/db');
 const { requireFields, createHttpError } = require('../utils/http');
+const { resolveStoredImage, logoFieldsFromBody } = require('../utils/images');
 
 const COMMERCE_TYPES = new Set(['restaurant', 'boutique']);
 
@@ -32,7 +33,10 @@ function mapRestaurant(r, categorieNom) {
     proprietaire_id: r.proprietaire_id,
     categorie_id: r.categorie_id,
     categorie_nom: categorieNom ?? null,
-    image_url: null,
+    image_url: r.logo_url ?? null,
+    delai_preparation_min: r.delai_preparation_min ?? 20,
+    livraison_propre: r.livraison_propre === true,
+    frais_livraison: Number(r.frais_livraison ?? 500),
   };
 }
 
@@ -51,7 +55,10 @@ function mapBoutique(b, categorieNom) {
     proprietaire_id: b.proprietaire_id,
     categorie_id: b.categorie_id,
     categorie_nom: categorieNom ?? null,
-    image_url: null,
+    image_url: b.logo_url ?? null,
+    delai_livraison_min: b.delai_livraison_min ?? 30,
+    livraison_propre: b.livraison_propre === true,
+    frais_livraison: Number(b.frais_livraison ?? 500),
   };
 }
 
@@ -186,6 +193,8 @@ async function createEnterprise(req, res, next) {
 
     const db = getDb();
     const resolvedCategoryId = await resolveCategoryId(db, type, categorieId);
+    const logoFields = logoFieldsFromBody(req.body);
+
     const base = {
       proprietaire_id: req.auth.userId,
       categorie_id: resolvedCategoryId,
@@ -197,6 +206,7 @@ async function createEnterprise(req, res, next) {
       longitude: longitude ?? null,
       statut,
       est_ouvert: statut === MODERATION.ACTIVE,
+      ...logoFields,
     };
 
     if (type === 'restaurant') {

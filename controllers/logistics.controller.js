@@ -8,6 +8,11 @@ const {
   suspendCourier,
   activateCourier,
   mapCourierPublic,
+  listDeliveriesForLogisticsCompany,
+  assignDeliveryForLogisticsCompany,
+  getLogisticsStatsForCompany,
+  getOperationsForCompany,
+  getDelaysForCompany,
 } = require('../services/logistics.service');
 
 async function getMyCompany(req, res, next) {
@@ -39,6 +44,39 @@ async function getMyCompany(req, res, next) {
       nb_livreurs: livreurs.length,
       livreurs,
     });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getMyStats(req, res, next) {
+  try {
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const stats = await getLogisticsStatsForCompany(db, company.id);
+    return res.json(stats);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getMyOperations(req, res, next) {
+  try {
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const ops = await getOperationsForCompany(db, company.id);
+    return res.json(ops);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getMyDelays(req, res, next) {
+  try {
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const delays = await getDelaysForCompany(db, company.id);
+    return res.json(delays);
   } catch (error) {
     return next(error);
   }
@@ -99,10 +137,42 @@ async function activateMyCourier(req, res, next) {
   }
 }
 
+async function listMyDeliveries(req, res, next) {
+  try {
+    const company = req.logisticsCompany;
+    const db = getDb();
+    const status = typeof req.query.status === 'string' ? req.query.status.trim() : undefined;
+    const livraisons = await listDeliveriesForLogisticsCompany(db, company.id, { status });
+    return res.json(livraisons);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function assignMyDelivery(req, res, next) {
+  try {
+    const company = req.logisticsCompany;
+    const { deliveryId } = req.params;
+    const { livreurId } = req.body || {};
+    requireFields(req.body, ['livreurId']);
+
+    const db = getDb();
+    const row = await assignDeliveryForLogisticsCompany(db, company.id, deliveryId, livreurId);
+    return res.json(row);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   getMyCompany,
+  getMyStats,
+  getMyOperations,
+  getMyDelays,
   listMyCouriers,
   createMyCourier,
   suspendMyCourier,
   activateMyCourier,
+  listMyDeliveries,
+  assignMyDelivery,
 };

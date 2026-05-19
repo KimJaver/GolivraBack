@@ -225,10 +225,11 @@ function mapSousStatutToVendor(statut) {
   switch (statut) {
     case 'en_attente':
     case 'acceptee':
-    case 'prete':
       return 'a_preparer';
     case 'en_preparation':
       return 'en_preparation';
+    case 'prete':
+      return 'prete';
     case 'collectee':
       return 'en_livraison';
     case 'livree':
@@ -287,7 +288,11 @@ async function mapVendorOrderRow(db, sc, commande, client) {
   else if (typeof snap === 'string') addr = snap;
 
   let livreur = null;
-  const { data: livraison } = await db.from('livraisons').select('livreur_id').eq('sous_commande_id', sc.id).maybeSingle();
+  const { data: livraison } = await db
+    .from('livraisons')
+    .select('livreur_id, statut')
+    .eq('sous_commande_id', sc.id)
+    .maybeSingle();
   if (livraison?.livreur_id) {
     const { data: liv } = await db.from('livreurs').select('utilisateur_id').eq('id', livraison.livreur_id).maybeSingle();
     if (liv?.utilisateur_id) {
@@ -296,12 +301,18 @@ async function mapVendorOrderRow(db, sc, commande, client) {
     }
   }
 
+  const establishmentType = sc.restaurant_id ? 'restaurant' : 'boutique';
+  const establishmentId = sc.restaurant_id || sc.boutique_id || null;
+
   return {
     id: commande.id,
     sous_commande_id: sc.id,
     ref: commande.numero || sc.numero,
     statut: mapSousStatutToVendor(sc.statut),
     statut_brut: sc.statut,
+    mode_livraison: sc.mode_livraison || 'golivra',
+    establishmentType,
+    establishmentId,
     clientNom: client?.nom || 'Client',
     clientTel: client?.telephone || '',
     adresse: addr,
@@ -317,6 +328,7 @@ async function mapVendorOrderRow(db, sc, commande, client) {
       prixUnitaire: Number(it.prix_unitaire),
     })),
     livreur: livreur || undefined,
+    livraison_statut: livraison?.statut ?? null,
     created_at: commande.created_at,
   };
 }

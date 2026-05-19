@@ -5,6 +5,57 @@ const { revokeUserSessions } = require('./session.service');
 
 const VEHICLE_TYPES = new Set(['moto', 'voiture', 'velo', 'pied']);
 
+const DELAY_ASSIGN_MINUTES = Number(process.env.LOGISTICS_DELAY_ASSIGN_MINUTES) || 20;
+const DELAY_DELIVERY_MINUTES = Number(process.env.LOGISTICS_DELAY_DELIVERY_MINUTES) || 45;
+
+function minutesSince(iso) {
+  if (!iso) return 0;
+  const ms = Date.now() - new Date(iso).getTime();
+  return Math.max(0, Math.floor(ms / 60000));
+}
+
+function startOfTodayIso() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function classifyDeliveryDelay(liv) {
+  const now = Date.now();
+  const createdAt = liv.created_at ? new Date(liv.created_at).getTime() : now;
+  const assignedAt = liv.attribuee_at ? new Date(liv.attribuee_at).getTime() : null;
+
+  if (liv.statut === 'livree' || liv.statut === 'annulee') {
+    return { en_retard: false, type_retard: null, minutes_retard: 0 };
+  }
+
+  if (!liv.livreur_id) {
+    const waitMin = Math.floor((now - createdAt) / 60000);
+    if (waitMin >= DELAY_ASSIGN_MINUTES) {
+      return {
+        en_retard: true,
+        type_retard: 'assignation',
+        minutes_retard: waitMin - DELAY_ASSIGN_MINUTES,
+      };
+    }
+    return { en_retard: false, type_retard: null, minutes_retard: 0 };
+  }
+
+  if (liv.statut === 'en_route' || liv.statut === 'en_cours') {
+    const ref = assignedAt || createdAt;
+    const routeMin = Math.floor((now - ref) / 60000);
+    if (routeMin >= DELAY_DELIVERY_MINUTES) {
+      return {
+        en_retard: true,
+        type_retard: 'livraison',
+        minutes_retard: routeMin - DELAY_DELIVERY_MINUTES,
+      };
+    }
+  }
+
+  return { en_retard: false, type_retard: null, minutes_retard: 0 };
+}
+
 function normalizeEmail(raw) {
   if (typeof raw !== 'string') return null;
   const email = raw.trim().toLowerCase();
@@ -289,8 +340,247 @@ async function activateCourier(db, livreurId, companyId) {
   return getLivreurInCompany(db, livreurId, companyId);
 }
 
+async function getCourierIdsForCompany(db, companyId) {
+  const { data: livreurs, error } = await db
+    .from('livreurs')
+    .select('id')
+    .eq('entreprise_logistique_id', companyId);
+  if (error) throw error;
+  return (livreurs || []).map((l) => l.id);
+}
+
+function deliveryAddressFromSnapshot(snap) {
+  if (snap && typeof snap === 'object' && snap.texte) return String(snap.texte);
+  if (typeof snap === 'string') return snap;
+  return '';
+}
+
+async function mapDeliveryRow(db, liv) {
+  const { data: sc } = await db.from('sous_commandes').select('*').eq('id', liv.sous_commande_id).maybeSingle();
+  let commande = null;
+  if (sc?.commande_id) {
+    const { data: c } = await db
+      .from('commandes')
+      .select('id, numero, statut, created_at')
+      .eq('id', sc.commande_id)
+      .maybeSingle();
+    commande = c;
+  }
+
+  let livreur = null;
+  if (liv.livreur_id) {
+    const { data: l } = await db
+      .from('livreurs')
+      .select('id, utilisateur_id, type_vehicule, entreprise_logistique_id')
+      .eq('id', liv.livreur_id)
+      .maybeSingle();
+    if (l?.utilisateur_id) {
+      const { data: u } = await db
+        .from('utilisateurs')
+        .select('nom, telephone')
+        .eq('id', l.utilisateur_id)
+        .maybeSingle();
+      livreur = {
+        id: l.id,
+        nom: u?.nom,
+        telephone: u?.telephone,
+        type_vehicule: l.type_vehicule,
+        entreprise_logistique_id: l.entreprise_logistique_id,
+      };
+    }
+  }
+
+  const delay = classifyDeliveryDelay(liv);
+  const elapsedSinceCreated = minutesSince(liv.created_at);
+  const elapsedSinceAssigned = liv.attribuee_at ? minutesSince(liv.attribuee_at) : null;
+
+  return {
+    id: liv.id,
+    statut: liv.statut,
+    created_at: liv.created_at,
+    attribuee_at: liv.attribuee_at,
+    livree_at: liv.livree_at,
+    adresse: deliveryAddressFromSnapshot(liv.adresse_livraison_snapshot),
+    commande,
+    sous_commande_id: liv.sous_commande_id,
+    livreur,
+    minutes_depuis_creation: elapsedSinceCreated,
+    minutes_depuis_attribution: elapsedSinceAssigned,
+    en_retard: delay.en_retard,
+    type_retard: delay.type_retard,
+    minutes_retard: delay.minutes_retard,
+  };
+}
+
+async function loadDeliveriesForCompany(db, companyId, { status } = {}) {
+  const courierIds = await getCourierIdsForCompany(db, companyId);
+  const courierSet = new Set(courierIds);
+
+  let query = db.from('livraisons').select('*').order('created_at', { ascending: false });
+  if (status) query = query.eq('statut', status);
+  const { data: livraisons, error } = await query;
+  if (error) throw error;
+
+  const filtered = (livraisons || []).filter(
+    (liv) => !liv.livreur_id || courierSet.has(liv.livreur_id),
+  );
+
+  const out = [];
+  for (const liv of filtered) {
+    out.push(await mapDeliveryRow(db, liv));
+  }
+  return out;
+}
+
+async function listDeliveriesForLogisticsCompany(db, companyId, { status } = {}) {
+  return loadDeliveriesForCompany(db, companyId, { status });
+}
+
+async function getLogisticsStatsForCompany(db, companyId) {
+  const [couriers, deliveries] = await Promise.all([
+    listCouriersForCompany(db, companyId),
+    loadDeliveriesForCompany(db, companyId),
+  ]);
+
+  const todayStart = startOfTodayIso();
+  const todayDeliveries = deliveries.filter((d) => d.created_at >= todayStart);
+  const activeStatuses = new Set(['en_attente', 'en_route', 'en_cours', 'assignee']);
+  const enCours = deliveries.filter((d) => activeStatuses.has(d.statut));
+  const enRetard = deliveries.filter((d) => d.en_retard);
+  const livreesAujourdhui = todayDeliveries.filter((d) => d.statut === 'livree');
+  const sansLivreur = deliveries.filter(
+    (d) => !d.livreur?.id && d.statut !== 'livree' && d.statut !== 'annulee',
+  );
+
+  const parStatut = deliveries.reduce((acc, d) => {
+    const key = d.statut || 'inconnu';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  const completedWithDuration = livreesAujourdhui.filter((d) => d.attribuee_at && d.livree_at);
+  let delaiMoyenMinutes = null;
+  if (completedWithDuration.length > 0) {
+    const totalMin = completedWithDuration.reduce((acc, d) => {
+      const start = new Date(d.attribuee_at).getTime();
+      const end = new Date(d.livree_at).getTime();
+      return acc + Math.max(0, Math.floor((end - start) / 60000));
+    }, 0);
+    delaiMoyenMinutes = Math.round(totalMin / completedWithDuration.length);
+  }
+
+  const totalLivraisonsCouriers = couriers.reduce((acc, c) => acc + Number(c.nb_livraisons_total || 0), 0);
+  const reussiesCouriers = couriers.reduce((acc, c) => acc + Number(c.nb_livraisons_reussies || 0), 0);
+  const tauxReussite =
+    totalLivraisonsCouriers > 0 ? Math.round((reussiesCouriers / totalLivraisonsCouriers) * 100) : null;
+
+  return {
+    seuils_retard: {
+      assignation_minutes: DELAY_ASSIGN_MINUTES,
+      livraison_minutes: DELAY_DELIVERY_MINUTES,
+    },
+    livreurs_total: couriers.length,
+    livreurs_disponibles: couriers.filter((c) => c.est_disponible && c.utilisateur?.est_actif !== false).length,
+    livreurs_actifs: couriers.filter((c) => c.utilisateur?.est_actif !== false).length,
+    livraisons_total: deliveries.length,
+    livraisons_aujourdhui: todayDeliveries.length,
+    livraisons_en_cours: enCours.length,
+    livraisons_en_retard: enRetard.length,
+    livraisons_sans_livreur: sansLivreur.length,
+    livraisons_livrees_aujourdhui: livreesAujourdhui.length,
+    taux_reussite_pct: tauxReussite,
+    delai_moyen_minutes: delaiMoyenMinutes,
+    par_statut: parStatut,
+    mis_a_jour_le: new Date().toISOString(),
+  };
+}
+
+async function getOperationsForCompany(db, companyId) {
+  const deliveries = await loadDeliveriesForCompany(db, companyId);
+  const active = deliveries.filter((d) => d.statut !== 'livree' && d.statut !== 'annulee');
+  const recentDone = deliveries
+    .filter((d) => d.statut === 'livree' && d.livree_at && d.livree_at >= startOfTodayIso())
+    .slice(0, 15);
+
+  const colonnes = {
+    sans_livreur: active.filter((d) => !d.livreur?.id),
+    en_route: active.filter((d) => d.livreur?.id && (d.statut === 'en_route' || d.statut === 'en_cours')),
+    autres: active.filter(
+      (d) => d.livreur?.id && d.statut !== 'en_route' && d.statut !== 'en_cours',
+    ),
+  };
+
+  return {
+    livraisons_actives: active,
+    livraisons_recentes_livrees: recentDone,
+    colonnes,
+    alertes_retard: active.filter((d) => d.en_retard),
+    mis_a_jour_le: new Date().toISOString(),
+  };
+}
+
+async function getDelaysForCompany(db, companyId) {
+  const deliveries = await loadDeliveriesForCompany(db, companyId);
+  const retards = deliveries
+    .filter((d) => d.en_retard)
+    .sort((a, b) => (b.minutes_retard || 0) - (a.minutes_retard || 0));
+
+  return {
+    total: retards.length,
+    assignation: retards.filter((d) => d.type_retard === 'assignation').length,
+    livraison: retards.filter((d) => d.type_retard === 'livraison').length,
+    livraisons: retards,
+    seuils_retard: {
+      assignation_minutes: DELAY_ASSIGN_MINUTES,
+      livraison_minutes: DELAY_DELIVERY_MINUTES,
+    },
+    mis_a_jour_le: new Date().toISOString(),
+  };
+}
+
+async function assignDeliveryForLogisticsCompany(db, companyId, deliveryId, livreurId) {
+  const courierIds = await getCourierIdsForCompany(db, companyId);
+  if (!courierIds.includes(livreurId)) {
+    throw createHttpError(403, 'Ce livreur n\'appartient pas à votre entreprise.');
+  }
+
+  await getLivreurInCompany(db, livreurId, companyId);
+
+  const { data: delivery, error: delErr } = await db
+    .from('livraisons')
+    .select('*')
+    .eq('id', deliveryId)
+    .maybeSingle();
+  if (delErr) throw delErr;
+  if (!delivery) throw createHttpError(404, 'Livraison introuvable.');
+
+  if (delivery.livreur_id && !courierIds.includes(delivery.livreur_id)) {
+    throw createHttpError(403, 'Cette livraison est déjà attribuée à un autre transporteur.');
+  }
+
+  if (delivery.statut === 'livree' || delivery.statut === 'annulee') {
+    throw createHttpError(400, 'Cette livraison ne peut plus être modifiée.');
+  }
+
+  const { data, error } = await db
+    .from('livraisons')
+    .update({
+      livreur_id: livreurId,
+      statut: 'en_route',
+      attribuee_at: new Date().toISOString(),
+    })
+    .eq('id', deliveryId)
+    .select('*')
+    .single();
+  if (error || !data) throw createHttpError(404, 'Livraison introuvable.');
+
+  return mapDeliveryRow(db, data);
+}
+
 module.exports = {
   VEHICLE_TYPES,
+  DELAY_ASSIGN_MINUTES,
+  DELAY_DELIVERY_MINUTES,
   normalizeEmail,
   getRoleId,
   getCompanyById,
@@ -303,4 +593,9 @@ module.exports = {
   suspendCourier,
   activateCourier,
   mapCourierPublic,
+  listDeliveriesForLogisticsCompany,
+  assignDeliveryForLogisticsCompany,
+  getLogisticsStatsForCompany,
+  getOperationsForCompany,
+  getDelaysForCompany,
 };

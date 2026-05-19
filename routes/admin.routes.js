@@ -1,6 +1,5 @@
 const express = require('express');
 const {
-  createCourier,
   getAdminStats,
   listAllEnterprises,
   listEnterprisesPending,
@@ -16,13 +15,8 @@ const {
   listLogisticsCompanies,
   getLogisticsCompanyAdmin,
   createLogisticsCompany,
-  createLogisticsCourier,
-  suspendLogisticsCourier,
-  activateLogisticsCourier,
   updateLogisticsStatus,
   listAdminDeliveries,
-  listAdminCouriers,
-  assignDeliveryCourier,
   getAdminCommissions,
 } = require('../controllers/admin.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
@@ -54,12 +48,8 @@ router.get('/logistics', ...adminOnly, listLogisticsCompanies);
 router.post('/logistics', ...adminOnly, createLogisticsCompany);
 router.get('/logistics/:companyId', ...adminOnly, getLogisticsCompanyAdmin);
 router.patch('/logistics/:companyId/status', ...adminOnly, updateLogisticsStatus);
-router.post('/logistics/:companyId/livreurs', ...adminOnly, createLogisticsCourier);
-router.patch('/logistics/:companyId/livreurs/:livreurId/suspend', ...adminOnly, suspendLogisticsCourier);
-router.patch('/logistics/:companyId/livreurs/:livreurId/activate', ...adminOnly, activateLogisticsCourier);
 
 router.get('/deliveries', ...adminOnly, listAdminDeliveries);
-router.patch('/deliveries/:deliveryId/assign', ...adminOnly, assignDeliveryCourier);
 
 router.get('/commissions', ...adminOnly, getAdminCommissions);
 
