@@ -280,6 +280,38 @@ async function me(req, res, next) {
     const { data: roleRow } = await db.from('roles').select('nom').eq('id', user.role_id).maybeSingle();
     const roleNom = roleRow?.nom ?? null;
 
+    let livreur = null;
+    let entrepriseLogistique = null;
+    if (roleNom === 'livreur') {
+      const { data: liv } = await db
+        .from('livreurs')
+        .select(
+          'id, type_vehicule, est_disponible, est_approuve, nb_livraisons_total, nb_livraisons_reussies, plaque_immatriculation, entreprise_logistique_id, created_at',
+        )
+        .eq('utilisateur_id', user.id)
+        .maybeSingle();
+      if (liv) {
+        livreur = {
+          id: liv.id,
+          type_vehicule: liv.type_vehicule,
+          est_disponible: liv.est_disponible,
+          est_approuve: liv.est_approuve,
+          nb_livraisons_total: liv.nb_livraisons_total,
+          nb_livraisons_reussies: liv.nb_livraisons_reussies,
+          plaque_immatriculation: liv.plaque_immatriculation,
+          created_at: liv.created_at,
+        };
+        if (liv.entreprise_logistique_id) {
+          const { data: ent } = await db
+            .from('entreprises_logistiques')
+            .select('id, nom, telephone')
+            .eq('id', liv.entreprise_logistique_id)
+            .maybeSingle();
+          entrepriseLogistique = ent;
+        }
+      }
+    }
+
     return res.json({
       id: user.id,
       nom: user.nom,
@@ -292,6 +324,8 @@ async function me(req, res, next) {
       created_at: user.created_at,
       imageUrl: userImageUrl(user),
       image_url: userImageUrl(user),
+      livreur,
+      entreprise_logistique: entrepriseLogistique,
     });
   } catch (error) {
     return next(error);
