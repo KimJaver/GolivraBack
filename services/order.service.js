@@ -362,14 +362,8 @@ async function syncCommandeStatutFromSousCommandes(db, commandeId) {
   else if (statuts.every((s) => s === 'acceptee')) next = 'acceptee';
   else if (statuts.some((s) => s === 'acceptee')) next = 'partiellement_acceptee';
 
-  const now = new Date().toISOString();
-  const patch = { statut: next, updated_at: now };
-  if (next === 'livree') patch.livree_at = now;
-  if (next === 'acceptee' || next === 'partiellement_acceptee') {
-    const { data: cmd } = await db.from('commandes').select('acceptee_at').eq('id', commandeId).maybeSingle();
-    if (!cmd?.acceptee_at) patch.acceptee_at = now;
-  }
-  if (next === 'annulee') patch.annulee_at = now;
+  const patch = { statut: next, updated_at: new Date().toISOString() };
+  if (next === 'livree') patch.livree_at = new Date().toISOString();
 
   await db.from('commandes').update(patch).eq('id', commandeId);
 }
@@ -381,7 +375,7 @@ async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) 
     .eq('id', sousCommandeId)
     .maybeSingle();
   if (scErr) throw scErr;
-  if (!sc) throw createHttpError(404, 'Sous-commande introuvable');
+  if (!sc) throw createHttpError(404, 'Commande introuvable');
 
   if (statut === 'acceptee' || statut === 'en_preparation' || statut === 'prete') {
     const { assertCommandePayee } = require('./payment.service');
@@ -414,7 +408,7 @@ async function updateSousCommandeStatut(db, sousCommandeId, statut, extra = {}) 
     .eq('id', sousCommandeId)
     .select('*')
     .single();
-  if (error || !updated) throw createHttpError(404, 'Sous-commande introuvable');
+  if (error || !updated) throw createHttpError(404, 'Commande introuvable');
 
   if (statut === 'prete' && (sc.mode_livraison || 'golivra') === 'golivra') {
     await onSousCommandeReady(db, sousCommandeId);

@@ -30,7 +30,7 @@ function mapLivraisonTimeline(liv) {
   if (!liv) return [];
   return buildSteps([
     step('created', 'Livraison créée', liv.created_at),
-    step('assigned', 'Attribuée au livreur', liv.attribuee_at || liv.assigne_le),
+    step('assigned', 'Livreur en route', liv.attribuee_at || liv.assigne_le),
     step('collected', 'Récupérée chez le commerce', liv.collectee_at),
     step('delivered', 'Livraison terminée', liv.livree_at || liv.livre_le),
     liv.echec_at ? step('failed', 'Échec de livraison', liv.echec_at) : null,
@@ -40,12 +40,12 @@ function mapLivraisonTimeline(liv) {
 function mapSousCommandeTimeline(sc) {
   if (!sc) return [];
   return buildSteps([
-    step('created', 'Sous-commande créée', sc.created_at),
+    step('created', 'Commande envoyée au commerce', sc.created_at),
     step('accepted', 'Acceptée par le commerce', sc.acceptee_at),
     step('refused', 'Refusée', sc.refusee_at),
-    step('ready', 'Prête pour livraison', sc.prete_at),
-    step('collected', 'Collectée par le livreur', sc.collectee_at),
-    step('delivered', 'Livrée au client', sc.livree_at),
+    step('ready', 'Prête pour le livreur', sc.prete_at),
+    step('collected', 'Récupérée par le livreur', sc.collectee_at),
+    step('delivered', 'Livrée chez vous', sc.livree_at),
   ]);
 }
 

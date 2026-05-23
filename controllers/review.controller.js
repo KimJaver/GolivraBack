@@ -104,7 +104,7 @@ async function submitReview(req, res, next) {
       .eq('id', sousCommandeId)
       .maybeSingle();
     if (scErr) throw scErr;
-    if (!sc) throw createHttpError(404, 'Sous-commande introuvable.');
+    if (!sc) throw createHttpError(404, 'Commande introuvable.');
 
     const { data: commande, error: cErr } = await db
       .from('commandes')
@@ -191,7 +191,7 @@ async function submitReview(req, res, next) {
       });
     }
 
-    throw createHttpError(400, 'Commerce introuvable pour cette sous-commande.');
+    throw createHttpError(400, 'Commerce introuvable pour cette commande.');
   } catch (error) {
     return next(error);
   }

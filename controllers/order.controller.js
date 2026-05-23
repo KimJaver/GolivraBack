@@ -5,14 +5,6 @@ const {
   updateSousCommandeStatut,
   mapSousStatutToVendor,
 } = require('../services/order.service');
-const {
-  formatDateTimeFr,
-  mapCommandeTimeline,
-  mapLivraisonTimeline,
-  mapTimestampFields,
-  COMMANDE_TIMESTAMP_FIELDS,
-  LIVRAISON_TIMESTAMP_FIELDS,
-} = require('../utils/timeline');
 
 /** Statuts autorisés pour une sous-commande (schéma v3). */
 const ALLOWED_SOUS_STATUT = new Set([
@@ -185,7 +177,7 @@ async function mapVendorOrderRow(db, sc, commande, client) {
   let livreur = null;
   const { data: livraison } = await db
     .from('livraisons')
-    .select('*')
+    .select('livreur_id, statut')
     .eq('sous_commande_id', sc.id)
     .maybeSingle();
   if (livraison?.livreur_id) {
@@ -224,13 +216,7 @@ async function mapVendorOrderRow(db, sc, commande, client) {
     })),
     livreur: livreur || undefined,
     livraison_statut: livraison?.statut ?? null,
-    livraison_id: livraison?.id ?? null,
     created_at: commande.created_at,
-    commande_timeline: mapCommandeTimeline(commande, [sc], livraison ? [livraison] : []).commande,
-    sous_commande_timeline: mapCommandeTimeline(commande, [sc], livraison ? [livraison] : []).sous_commandes[0]?.timeline ?? [],
-    livraison_timeline: livraison ? mapLivraisonTimeline(livraison) : [],
-    ...mapTimestampFields(commande, COMMANDE_TIMESTAMP_FIELDS),
-    ...(livraison ? mapTimestampFields(livraison, LIVRAISON_TIMESTAMP_FIELDS) : {}),
   };
 }
 
@@ -301,7 +287,7 @@ async function getVendorOrderDetails(req, res, next) {
       .eq('commande_id', orderId)
       .in('id', ownedIds);
     const sc = scs && scs[0];
-    if (!sc) throw createHttpError(404, 'Sous-commande introuvable');
+    if (!sc) throw createHttpError(404, 'Commande introuvable');
 
     const { data: client } = await db
       .from('utilisateurs')
@@ -342,15 +328,6 @@ async function getOrders(req, res, next) {
       scByCommande.get(sc.commande_id).push(sc);
     }
 
-    const scIds = (allScs || []).map((s) => s.id);
-    const livraisonBySc = new Map();
-    if (scIds.length > 0) {
-      const { data: livs } = await db.from('livraisons').select('*').in('sous_commande_id', scIds);
-      for (const liv of livs || []) {
-        if (liv.sous_commande_id) livraisonBySc.set(liv.sous_commande_id, liv);
-      }
-    }
-
     const livreeIds = (allScs || []).filter((s) => s.statut === 'livree').map((s) => s.id);
     const ratedSet = new Set();
     if (livreeIds.length > 0) {
@@ -379,17 +356,7 @@ async function getOrders(req, res, next) {
           }
         : { peut_noter: false };
 
-      const livraisons = scs.map((s) => livraisonBySc.get(s.id)).filter(Boolean);
-      const timeline = mapCommandeTimeline(c, scs, livraisons);
-
-      out.push(
-        mapCommandeListRow(c, eid, {
-          ...extra,
-          timeline,
-          livraison_livree_at: livraisons[0]?.livree_at ?? null,
-          livraison_livree_at_label: formatDateTimeFr(livraisons[0]?.livree_at),
-        }),
-      );
+      out.push(mapCommandeListRow(c, eid, extra));
     }
 
     return res.json(out);
@@ -427,17 +394,9 @@ async function getOrderDetails(req, res, next) {
     const first = sousCommandes && sousCommandes[0];
     const eid = first ? first.restaurant_id || first.boutique_id : null;
 
-    const scIds = (sousCommandes || []).map((s) => s.id);
-    let livraisons = [];
-    if (scIds.length > 0) {
-      const { data: livs } = await db.from('livraisons').select('*').in('sous_commande_id', scIds);
-      livraisons = livs || [];
-    }
-
     return res.json({
       ...mapCommandeListRow(order, eid),
       sousCommandes: enriched,
-      timeline: mapCommandeTimeline(order, sousCommandes || [], livraisons),
     });
   } catch (error) {
     return next(error);
@@ -454,7 +413,7 @@ async function updateOrderStatus(req, res, next) {
 
     if (req.auth.role === 'admin') {
       if (!ALLOWED_COMMANDE_STATUT.has(statut)) {
-        throw createHttpError(400, 'Statut de commande principal non pris en charge');
+        throw createHttpError(400, 'Ce changement de statut n’est pas possible.');
       }
       const { data, error } = await db
         .from('commandes')
@@ -467,12 +426,12 @@ async function updateOrderStatus(req, res, next) {
     }
 
     if (!ALLOWED_SOUS_STATUT.has(statut)) {
-      throw createHttpError(400, 'Statut de sous-commande non pris en charge');
+      throw createHttpError(400, 'Ce changement de statut n’est pas possible.');
     }
 
     const ownedIds = await findVendorSousCommandeIdsForOrder(db, req.auth.userId, orderId);
     if (ownedIds.length === 0) {
-      throw createHttpError(403, 'Aucune sous-commande pour cet établissement');
+      throw createHttpError(403, 'Aucune commande pour votre commerce.');
     }
 
     const targetId = sousCommandeId || (ownedIds.length === 1 ? ownedIds[0] : null);
@@ -484,7 +443,7 @@ async function updateOrderStatus(req, res, next) {
     }
 
     const { data: current } = await db.from('sous_commandes').select('statut, mode_livraison').eq('id', targetId).maybeSingle();
-    if (!current) throw createHttpError(404, 'Sous-commande introuvable');
+    if (!current) throw createHttpError(404, 'Commande introuvable');
 
     if (statut === 'acceptee' && current.statut !== 'en_attente') {
       throw createHttpError(400, 'Cette commande ne peut plus être acceptée.');
