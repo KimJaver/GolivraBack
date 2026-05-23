@@ -244,11 +244,23 @@ async function createEnterprise(req, res, next) {
     if (type === 'restaurant') {
       const { data, error } = await db.from('restaurants').insert(base).select('*').single();
       if (error) throw error;
+      if (statut === MODERATION.EN_ATTENTE) {
+        const { notifyEnterprisePendingModeration } = require('../services/admin-notify.service');
+        await notifyEnterprisePendingModeration(db, { type: 'restaurant', nom, enterpriseId: data.id }).catch(
+          () => undefined,
+        );
+      }
       return res.status(201).json(mapRestaurant(data));
     }
 
     const { data, error } = await db.from('boutiques').insert(base).select('*').single();
     if (error) throw error;
+    if (statut === MODERATION.EN_ATTENTE) {
+      const { notifyEnterprisePendingModeration } = require('../services/admin-notify.service');
+      await notifyEnterprisePendingModeration(db, { type: 'boutique', nom, enterpriseId: data.id }).catch(
+        () => undefined,
+      );
+    }
     return res.status(201).json(mapBoutique(data));
   } catch (error) {
     return next(error);

@@ -199,6 +199,13 @@ async function createExternalDelivery(db, userId, payload) {
 
   const { notifyAvailableCouriersForDelivery } = require('./notification.service');
   await notifyAvailableCouriersForDelivery(db, created.id).catch(() => {});
+  const { notifyAllAdmins } = require('./admin-notify.service');
+  await notifyAllAdmins(db, {
+    type: 'livraison_externe',
+    titre: 'Nouvelle livraison externe',
+    corps: `Le commerce « ${est.nom} » a créé une livraison pour ${String(clientNom).trim()}.`,
+    data: { livraison_id: created.id, action: 'open_delivery' },
+  }).catch(() => undefined);
 
   const { data: refreshed } = await db.from('livraisons').select('*').eq('id', created.id).maybeSingle();
 

@@ -362,8 +362,14 @@ async function syncCommandeStatutFromSousCommandes(db, commandeId) {
   else if (statuts.every((s) => s === 'acceptee')) next = 'acceptee';
   else if (statuts.some((s) => s === 'acceptee')) next = 'partiellement_acceptee';
 
-  const patch = { statut: next, updated_at: new Date().toISOString() };
-  if (next === 'livree') patch.livree_at = new Date().toISOString();
+  const now = new Date().toISOString();
+  const patch = { statut: next, updated_at: now };
+  if (next === 'livree') patch.livree_at = now;
+  if (next === 'acceptee' || next === 'partiellement_acceptee') {
+    const { data: cmd } = await db.from('commandes').select('acceptee_at').eq('id', commandeId).maybeSingle();
+    if (!cmd?.acceptee_at) patch.acceptee_at = now;
+  }
+  if (next === 'annulee') patch.annulee_at = now;
 
   await db.from('commandes').update(patch).eq('id', commandeId);
 }

@@ -8,7 +8,16 @@ const {
   activateCourier,
   assertCompanyAccess,
   mapCourierPublic,
+  classifyDeliveryDelay,
+  notifyDeliveryDelaysForList,
 } = require('../services/logistics.service');
+const {
+  formatDateTimeFr,
+  mapCommandeTimeline,
+  mapLivraisonTimeline,
+  mapTimestampFields,
+  COMMANDE_TIMESTAMP_FIELDS,
+} = require('../utils/timeline');
 
 async function createCourier(req, res, next) {
   try {
@@ -281,7 +290,10 @@ async function getEnterpriseAdmin(req, res, next) {
         ? mapRestaurantAdmin(found.row, owner)
         : mapBoutiqueAdmin(found.row, owner);
 
-    return res.json({ ...mapped, products });
+    const { getCommerceStatsForEnterprise } = require('../services/admin-commerce-stats.service');
+    const stats = await getCommerceStatsForEnterprise(db, enterpriseId, found.kind);
+
+    return res.json({ ...mapped, products, stats });
   } catch (error) {
     return next(error);
   }
@@ -477,8 +489,11 @@ function mapCommandeAdmin(c, client) {
     total: Number(c.total ?? 0),
     sous_total: Number(c.sous_total ?? 0),
     frais_livraison_total: Number(c.frais_livraison_total ?? 0),
+    remise_totale: Number(c.remise_totale ?? 0),
     adresse_livraison: addr,
     created_at: c.created_at,
+    created_at_label: formatDateTimeFr(c.created_at),
+    ...mapTimestampFields(c, COMMANDE_TIMESTAMP_FIELDS),
     client: client
       ? { id: client.id, nom: client.nom, telephone: client.telephone, email: client.email }
       : null,
@@ -559,9 +574,35 @@ async function getAdminOrderDetail(req, res, next) {
       });
     }
 
+    const scIds = (scs || []).map((s) => s.id);
+    let livraisons = [];
+    if (scIds.length > 0) {
+      const { data: livs } = await db.from('livraisons').select('*').in('sous_commande_id', scIds);
+      livraisons = livs || [];
+    }
+
     return res.json({
       ...mapCommandeAdmin(order, client),
-      sous_commandes: enriched,
+      sous_commandes: enriched.map((sc) => ({
+        ...sc,
+        timeline: mapCommandeTimeline(order, [sc], livraisons.filter((l) => l.sous_commande_id === sc.id))
+          .sous_commandes[0]?.timeline ?? [],
+      })),
+      livraisons: livraisons.map((liv) => ({
+        id: liv.id,
+        statut: liv.statut,
+        livreur_id: liv.livreur_id,
+        timeline: mapLivraisonTimeline(liv),
+        created_at: liv.created_at,
+        created_at_label: formatDateTimeFr(liv.created_at),
+        attribuee_at: liv.attribuee_at,
+        attribuee_at_label: formatDateTimeFr(liv.attribuee_at),
+        collectee_at: liv.collectee_at,
+        collectee_at_label: formatDateTimeFr(liv.collectee_at),
+        livree_at: liv.livree_at,
+        livree_at_label: formatDateTimeFr(liv.livree_at),
+      })),
+      timeline: mapCommandeTimeline(order, scs || [], livraisons),
     });
   } catch (error) {
     return next(error);
@@ -635,12 +676,56 @@ async function getLogisticsCompanyAdmin(req, res, next) {
 
     const { data: livreurs } = await db
       .from('livreurs')
-      .select('id, type_vehicule, est_disponible, est_approuve, nb_livraisons_total, nb_livraisons_reussies')
+      .select(
+        'id, type_vehicule, est_disponible, est_approuve, nb_livraisons_total, nb_livraisons_reussies, plaque_immatriculation, utilisateur_id, created_at',
+      )
       .eq('entreprise_logistique_id', companyId);
+
+    const enrichedCouriers = [];
+    for (const l of livreurs || []) {
+      const { data: u } = l.utilisateur_id
+        ? await db.from('utilisateurs').select('id, nom, telephone, email, est_actif').eq('id', l.utilisateur_id).maybeSingle()
+        : { data: null };
+      enrichedCouriers.push({
+        ...l,
+        utilisateur: u,
+      });
+    }
+
+    const { data: recentLivraisons } = await db
+      .from('livraisons')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(40);
+
+    const courierIds = new Set((livreurs || []).map((x) => x.id));
+    const companyDeliveries = (recentLivraisons || []).filter((liv) => liv.livreur_id && courierIds.has(liv.livreur_id));
+    const recentMapped = [];
+    for (const liv of companyDeliveries.slice(0, 15)) {
+      recentMapped.push(await mapAdminDeliveryRow(db, liv));
+    }
+
+    const activeStatuses = new Set(['en_attente', 'attribuee', 'en_collecte', 'collectee', 'en_route']);
+    const enCours = companyDeliveries.filter((d) => activeStatuses.has(d.statut));
+    const enRetard = [];
+    for (const liv of enCours) {
+      const delay = classifyDeliveryDelay(liv);
+      if (delay.en_retard) enRetard.push({ id: liv.id, ...delay });
+    }
+
+    const { getLogisticsStatsForCompany } = require('../services/logistics.service');
+    const stats = await getLogisticsStatsForCompany(db, companyId);
 
     return res.json({
       ...mapLogisticsAdmin(row, gestionnaire, (livreurs || []).length),
-      livreurs: livreurs || [],
+      livreurs: enrichedCouriers,
+      livraisons_recentes: recentMapped,
+      resume_livraisons: {
+        en_cours: enCours.length,
+        en_retard: enRetard.length,
+        retards: enRetard,
+      },
+      stats,
     });
   } catch (error) {
     return next(error);
@@ -756,50 +841,141 @@ async function updateLogisticsStatus(req, res, next) {
   }
 }
 
+function addressFromDeliverySnapshot(snap) {
+  if (snap && typeof snap === 'object' && snap.texte) return String(snap.texte);
+  if (typeof snap === 'string') return snap;
+  return '';
+}
+
+async function loadCommerceForLivraison(db, liv) {
+  if (liv.restaurant_id) {
+    const { data } = await db.from('restaurants').select('id, nom, type:statut').eq('id', liv.restaurant_id).maybeSingle();
+    if (data) return { id: data.id, nom: data.nom, type: 'restaurant' };
+  }
+  if (liv.boutique_id) {
+    const { data } = await db.from('boutiques').select('id, nom').eq('id', liv.boutique_id).maybeSingle();
+    if (data) return { id: data.id, nom: data.nom, type: 'boutique' };
+  }
+  return null;
+}
+
+async function mapAdminDeliveryRow(db, liv) {
+  const isExterne = liv.type_livraison === 'externe' || !liv.sous_commande_id;
+  let commande = null;
+  let sousCommande = null;
+  const commerce = await loadCommerceForLivraison(db, liv);
+
+  if (!isExterne && liv.sous_commande_id) {
+    const { data: sc } = await db.from('sous_commandes').select('*').eq('id', liv.sous_commande_id).maybeSingle();
+    sousCommande = sc;
+    if (sc?.commande_id) {
+      const { data: c } = await db
+        .from('commandes')
+        .select('id, numero, statut, created_at, client_id')
+        .eq('id', sc.commande_id)
+        .maybeSingle();
+      commande = c;
+    }
+  }
+
+  let livreur = null;
+  let entrepriseLogistique = null;
+  if (liv.livreur_id) {
+    const { data: l } = await db
+      .from('livreurs')
+      .select('id, utilisateur_id, type_vehicule, entreprise_logistique_id, plaque_immatriculation')
+      .eq('id', liv.livreur_id)
+      .maybeSingle();
+    if (l?.utilisateur_id) {
+      const { data: u } = await db.from('utilisateurs').select('nom, telephone').eq('id', l.utilisateur_id).maybeSingle();
+      livreur = {
+        id: l.id,
+        nom: u?.nom,
+        telephone: u?.telephone,
+        type_vehicule: l.type_vehicule,
+        plaque_immatriculation: l.plaque_immatriculation,
+      };
+    }
+    if (l?.entreprise_logistique_id) {
+      const { data: ent } = await db
+        .from('entreprises_logistiques')
+        .select('id, nom, telephone')
+        .eq('id', l.entreprise_logistique_id)
+        .maybeSingle();
+      entrepriseLogistique = ent;
+    }
+  }
+
+  const adresse = addressFromDeliverySnapshot(liv.adresse_livraison_snapshot);
+  const adresseRetrait = addressFromDeliverySnapshot(liv.adresse_collecte_snapshot);
+  const delay = classifyDeliveryDelay(liv);
+
+  return {
+    id: liv.id,
+    type_livraison: isExterne ? 'externe' : 'commande',
+    statut: liv.statut,
+    created_at: liv.created_at,
+    created_at_label: formatDateTimeFr(liv.created_at),
+    attribuee_at: liv.attribuee_at,
+    attribuee_at_label: formatDateTimeFr(liv.attribuee_at),
+    collectee_at: liv.collectee_at,
+    collectee_at_label: formatDateTimeFr(liv.collectee_at),
+    livree_at: liv.livree_at,
+    livree_at_label: formatDateTimeFr(livree_at),
+    commande_created_at: commande?.created_at ?? null,
+    commande_created_at_label: formatDateTimeFr(commande?.created_at),
+    timeline: mapLivraisonTimeline(liv),
+    adresse,
+    adresse_retrait: adresseRetrait,
+    commande,
+    sous_commande: sousCommande,
+    sous_commande_id: liv.sous_commande_id,
+    commerce,
+    commerce_nom: commerce?.nom ?? null,
+    client_nom: liv.client_nom ?? null,
+    client_telephone: liv.client_telephone ?? null,
+    montant_total: liv.montant_total != null ? Number(liv.montant_total) : null,
+    note: liv.note ?? null,
+    livreur,
+    entreprise_logistique: entrepriseLogistique,
+    en_retard: delay.en_retard,
+    type_retard: delay.type_retard,
+    minutes_retard: delay.minutes_retard,
+  };
+}
+
 async function listAdminDeliveries(req, res, next) {
   try {
-    const { status } = req.query;
+    const { status, type: typeFilter } = req.query;
     const db = getDb();
     let query = db.from('livraisons').select('*').order('created_at', { ascending: false });
     if (status) query = query.eq('statut', status);
+    if (typeFilter === 'externe') query = query.eq('type_livraison', 'externe');
+    if (typeFilter === 'commande') query = query.eq('type_livraison', 'commande');
     const { data: livraisons, error } = await query;
     if (error) throw error;
 
     const out = [];
     for (const liv of livraisons || []) {
-      const { data: sc } = await db.from('sous_commandes').select('*').eq('id', liv.sous_commande_id).maybeSingle();
-      let commande = null;
-      if (sc?.commande_id) {
-        const { data: c } = await db.from('commandes').select('id, numero, statut, created_at').eq('id', sc.commande_id).maybeSingle();
-        commande = c;
-      }
-      let livreur = null;
-      if (liv.livreur_id) {
-        const { data: l } = await db.from('livreurs').select('id, utilisateur_id, type_vehicule').eq('id', liv.livreur_id).maybeSingle();
-        if (l?.utilisateur_id) {
-          const { data: u } = await db.from('utilisateurs').select('nom, telephone').eq('id', l.utilisateur_id).maybeSingle();
-          livreur = { id: l.id, nom: u?.nom, telephone: u?.telephone, type_vehicule: l.type_vehicule };
-        }
-      }
-      const snap = liv.adresse_livraison_snapshot;
-      let adresse = '';
-      if (snap && typeof snap === 'object' && snap.texte) adresse = snap.texte;
-      else if (typeof snap === 'string') adresse = snap;
-
-      out.push({
-        id: liv.id,
-        statut: liv.statut,
-        created_at: liv.created_at,
-        attribuee_at: liv.attribuee_at,
-        livree_at: liv.livree_at,
-        adresse,
-        commande,
-        sous_commande_id: liv.sous_commande_id,
-        livreur,
-      });
+      out.push(await mapAdminDeliveryRow(db, liv));
     }
 
+    void notifyDeliveryDelaysForList(db, livraisons || []).catch(() => undefined);
+
     return res.json(out);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getAdminDeliveryDetail(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const db = getDb();
+    const { data: liv, error } = await db.from('livraisons').select('*').eq('id', deliveryId).maybeSingle();
+    if (error) throw error;
+    if (!liv) throw createHttpError(404, 'Livraison introuvable.');
+    return res.json(await mapAdminDeliveryRow(db, liv));
   } catch (error) {
     return next(error);
   }
@@ -1024,6 +1200,7 @@ module.exports = {
   createLogisticsCompany,
   updateLogisticsStatus,
   listAdminDeliveries,
+  getAdminDeliveryDetail,
   getAdminCommissions,
   getAdminPlatformWallet,
   listAdminWithdrawals,

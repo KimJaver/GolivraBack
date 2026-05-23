@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { createHttpError } = require('../utils/http');
+const { formatDateTimeFr, mapLivraisonTimeline } = require('../utils/timeline');
 const { normalizeCgE164 } = require('../utils/phone');
 const { revokeUserSessions } = require('./session.service');
 
@@ -459,8 +460,16 @@ async function mapDeliveryRow(db, liv) {
     id: liv.id,
     statut: liv.statut,
     created_at: liv.created_at,
+    created_at_label: formatDateTimeFr(liv.created_at),
     attribuee_at: liv.attribuee_at,
+    attribuee_at_label: formatDateTimeFr(liv.attribuee_at),
+    collectee_at: liv.collectee_at,
+    collectee_at_label: formatDateTimeFr(liv.collectee_at),
     livree_at: liv.livree_at,
+    livree_at_label: formatDateTimeFr(liv.livree_at),
+    commande_created_at: commande?.created_at ?? null,
+    commande_created_at_label: formatDateTimeFr(commande?.created_at),
+    timeline: mapLivraisonTimeline(liv),
     adresse: deliveryAddressFromSnapshot(liv.adresse_livraison_snapshot),
     commande,
     sous_commande_id: liv.sous_commande_id,
@@ -678,10 +687,24 @@ async function retryAutoDispatchForCompany(db, companyId, deliveryId) {
   return mapDeliveryRow(db, refreshed || delivery);
 }
 
+async function notifyDeliveryDelaysForList(db, livraisons, commerceNomById = new Map()) {
+  const { notifyDeliveryDelay } = require('./admin-notify.service');
+  for (const liv of livraisons || []) {
+    if (liv.statut === 'livree' || liv.statut === 'annulee') continue;
+    const delay = classifyDeliveryDelay(liv);
+    if (!delay.en_retard) continue;
+    const commerceKey = liv.restaurant_id || liv.boutique_id;
+    const commerceNom = commerceNomById.get(commerceKey) || liv.client_nom;
+    await notifyDeliveryDelay(db, liv, delay, commerceNom).catch(() => undefined);
+  }
+}
+
 module.exports = {
   VEHICLE_TYPES,
   DELAY_ASSIGN_MINUTES,
   DELAY_DELIVERY_MINUTES,
+  classifyDeliveryDelay,
+  notifyDeliveryDelaysForList,
   normalizeEmail,
   getRoleId,
   getCompanyById,

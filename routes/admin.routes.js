@@ -20,6 +20,7 @@ const {
   createLogisticsCompany,
   updateLogisticsStatus,
   listAdminDeliveries,
+  getAdminDeliveryDetail,
   getAdminCommissions,
   getAdminPlatformWallet,
   listAdminWithdrawals,
@@ -57,6 +58,7 @@ router.get('/logistics/:companyId', ...adminOnly, getLogisticsCompanyAdmin);
 router.patch('/logistics/:companyId/status', ...adminOnly, updateLogisticsStatus);
 
 router.get('/deliveries', ...adminOnly, listAdminDeliveries);
+router.get('/deliveries/:deliveryId', ...adminOnly, getAdminDeliveryDetail);
 
 router.get('/commissions', ...adminOnly, getAdminCommissions);
 router.get('/portefeuille', ...adminOnly, getAdminPlatformWallet);

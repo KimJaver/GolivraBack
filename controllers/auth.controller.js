@@ -253,6 +253,17 @@ async function register(req, res, next) {
     await deleteOtpRow(db, otpRow.id);
 
     const { data: roleNomRow } = await db.from('roles').select('nom').eq('id', data.role_id).maybeSingle();
+    const roleNom = roleNomRow?.nom ?? role;
+
+    if (!data.est_approuve && (roleNom === 'restaurateur' || roleNom === 'commercant')) {
+      const { notifyAllAdmins } = require('../services/admin-notify.service');
+      await notifyAllAdmins(db, {
+        type: 'compte_marchand_en_attente',
+        titre: 'Nouveau compte marchand',
+        corps: `« ${nom} » (${roleNom}) attend la validation de son compte.`,
+        data: { utilisateur_id: data.id, role: roleNom, action: 'review_accounts' },
+      }).catch(() => undefined);
+    }
 
     return res.status(201).json({
       token,
