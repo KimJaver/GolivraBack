@@ -143,6 +143,19 @@ function parseIsoDate(value) {
   return d.toISOString();
 }
 
+function normalizeDimensions(dimensions) {
+  if (!dimensions || typeof dimensions !== 'object') return null;
+  const l = dimensions.l != null && dimensions.l !== '' ? Number(dimensions.l) : null;
+  const w = dimensions.w != null && dimensions.w !== '' ? Number(dimensions.w) : null;
+  const h = dimensions.h != null && dimensions.h !== '' ? Number(dimensions.h) : null;
+  if (![l, w, h].some((n) => Number.isFinite(n) && n > 0)) return null;
+  const out = {};
+  if (Number.isFinite(l) && l > 0) out.l = l;
+  if (Number.isFinite(w) && w > 0) out.w = w;
+  if (Number.isFinite(h) && h > 0) out.h = h;
+  return Object.keys(out).length ? out : null;
+}
+
 function applyArticleCatalogFields(target, body) {
   const {
     tags,
@@ -172,14 +185,67 @@ function applyArticleCatalogFields(target, body) {
   if (promoDebutAt !== undefined) target.promo_debut_at = promoStart;
   if (promoFinAt !== undefined) target.promo_fin_at = promoEnd;
 
-  if (typeProduit !== undefined) target.type_produit = typeProduit ? String(typeProduit).trim() : null;
-  if (etatProduit !== undefined) target.etat_produit = etatProduit ? String(etatProduit).trim() : null;
-  if (marque !== undefined) target.marque = marque ? String(marque).trim() : null;
+  if (typeProduit !== undefined && typeProduit) target.type_produit = String(typeProduit).trim();
+  if (etatProduit !== undefined && etatProduit) target.etat_produit = String(etatProduit).trim();
+  if (marque !== undefined && marque) target.marque = String(marque).trim();
   if (poidsKg !== undefined && poidsKg !== null && poidsKg !== '') {
-    target.poids_kg = Number(poidsKg);
+    const kg = Number(poidsKg);
+    if (Number.isFinite(kg) && kg > 0) target.poids_kg = kg;
   }
-  if (dimensions !== undefined) target.dimensions = dimensions || null;
+  const dims = normalizeDimensions(dimensions);
+  if (dims) target.dimensions = dims;
   if (estDisponible !== undefined) target.est_disponible = Boolean(estDisponible);
+}
+
+const OPTIONAL_ARTICLE_COLUMNS = [
+  'dimensions',
+  'images_urls',
+  'type_produit',
+  'etat_produit',
+  'marque',
+  'poids_kg',
+  'tags',
+  'promo_debut_at',
+  'promo_fin_at',
+];
+
+function isMissingColumnError(error, column) {
+  const msg = String(error?.message ?? error ?? '').toLowerCase();
+  return msg.includes(column) && (msg.includes('column') || msg.includes('colonne') || msg.includes('schema'));
+}
+
+async function insertArticleRow(db, row) {
+  const payload = { ...row };
+  const removed = new Set();
+
+  for (let attempt = 0; attempt <= OPTIONAL_ARTICLE_COLUMNS.length; attempt += 1) {
+    const { data, error } = await db.from('articles').insert(payload).select('*').single();
+    if (!error) return data;
+
+    const missing = OPTIONAL_ARTICLE_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
+    if (!missing) throw error;
+    delete payload[missing];
+    removed.add(missing);
+  }
+
+  throw createHttpError(500, 'Impossible d’enregistrer l’article.');
+}
+
+async function updateArticleRow(db, productId, patch) {
+  const payload = { ...patch };
+  const removed = new Set();
+
+  for (let attempt = 0; attempt <= OPTIONAL_ARTICLE_COLUMNS.length; attempt += 1) {
+    const { data, error } = await db.from('articles').update(payload).eq('id', productId).select('*').single();
+    if (!error) return data;
+
+    const missing = OPTIONAL_ARTICLE_COLUMNS.find((col) => !removed.has(col) && col in payload && isMissingColumnError(error, col));
+    if (!missing) throw error;
+    delete payload[missing];
+    removed.add(missing);
+  }
+
+  throw createHttpError(500, 'Impossible de mettre à jour l’article.');
 }
 
 function parseImageUrl(imageUrl) {
@@ -351,8 +417,7 @@ async function createProduct(req, res, next) {
       dimensions,
     });
 
-    const { data, error } = await db.from('articles').insert(insertArt).select('*').single();
-    if (error) throw error;
+    const data = await insertArticleRow(db, insertArt);
     return res.status(201).json(mapArticleToProduct(data, enterpriseId));
   } catch (error) {
     return next(error);
@@ -459,8 +524,7 @@ async function updateProduct(req, res, next) {
       estDisponible,
     });
 
-    const { data, error } = await db.from('articles').update(patch).eq('id', productId).select('*').single();
-    if (error) throw error;
+    const data = await updateArticleRow(db, productId, patch);
     return res.json(mapArticleToProduct(data, enterpriseId));
   } catch (error) {
     return next(error);
