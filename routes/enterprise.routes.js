@@ -7,6 +7,7 @@ const {
   getMyEnterprises,
   patchEnterprise,
   patchEnterpriseSettings,
+  getMyEnterpriseStats,
 } = require('../controllers/enterprise.controller');
 const { authMiddleware, optionalAuthMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
@@ -16,6 +17,12 @@ const router = express.Router();
 router.get('/', listEnterprises);
 router.get('/categories/:type', listCategories);
 router.get('/mine', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), getMyEnterprises);
+router.get(
+  '/:enterpriseId/stats',
+  authMiddleware,
+  requireRoles(['restaurateur', 'commercant', 'admin']),
+  getMyEnterpriseStats,
+);
 router.patch(
   '/:enterpriseId',
   authMiddleware,

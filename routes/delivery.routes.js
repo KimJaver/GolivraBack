@@ -3,6 +3,7 @@ const { authMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
 const {
   getDeliveryStatus,
+  getDeliveryDetails,
   getCourierProfile,
   listCourierMissions,
   updateCourierAvailability,
@@ -19,6 +20,7 @@ const {
 const router = express.Router();
 
 router.get('/status/:orderId', authMiddleware, getDeliveryStatus);
+router.get('/:deliveryId/details', authMiddleware, getDeliveryDetails);
 router.get(
   '/vendor/externe',
   authMiddleware,

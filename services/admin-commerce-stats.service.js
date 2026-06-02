@@ -92,11 +92,66 @@ async function getCommerceStatsForEnterprise(db, enterpriseId, kind) {
     total: aggregateForPeriod(rows, items, null),
   };
 
+  // ----- Engagement (vues / clics) - non périodique, cumulatif sur la durée de vie du produit -----
+  const productsTable = kind === 'restaurant' ? 'plats' : 'articles';
+  let engagement = {
+    total_vues: 0,
+    total_clics: 0,
+    taux_conversion_pct: 0,
+    top_vus: [],
+    top_cliques: [],
+  };
+  try {
+    const { data: prods } = await db
+      .from(productsTable)
+      .select('id, nom, nb_vues, nb_clics, nb_ventes, image_url')
+      .eq(fk, enterpriseId);
+    const list = prods || [];
+    const totalVues = list.reduce((s, p) => s + Number(p.nb_vues ?? 0), 0);
+    const totalClics = list.reduce((s, p) => s + Number(p.nb_clics ?? 0), 0);
+    const totalVentes = list.reduce((s, p) => s + Number(p.nb_ventes ?? 0), 0);
+    const top_vus = [...list]
+      .sort((a, b) => Number(b.nb_vues ?? 0) - Number(a.nb_vues ?? 0))
+      .slice(0, 10)
+      .map((p) => ({
+        id: p.id,
+        nom: p.nom,
+        image_url: p.image_url ?? null,
+        nb_vues: Number(p.nb_vues ?? 0),
+        nb_clics: Number(p.nb_clics ?? 0),
+        nb_ventes: Number(p.nb_ventes ?? 0),
+      }));
+    const top_cliques = [...list]
+      .sort((a, b) => Number(b.nb_clics ?? 0) - Number(a.nb_clics ?? 0))
+      .slice(0, 10)
+      .map((p) => ({
+        id: p.id,
+        nom: p.nom,
+        image_url: p.image_url ?? null,
+        nb_vues: Number(p.nb_vues ?? 0),
+        nb_clics: Number(p.nb_clics ?? 0),
+        nb_ventes: Number(p.nb_ventes ?? 0),
+      }));
+    engagement = {
+      total_vues: totalVues,
+      total_clics: totalClics,
+      total_ventes: totalVentes,
+      taux_conversion_pct: totalVues > 0 ? Math.round((totalClics / totalVues) * 1000) / 10 : 0,
+      taux_achat_pct: totalClics > 0 ? Math.round((totalVentes / totalClics) * 1000) / 10 : 0,
+      top_vus,
+      top_cliques,
+    };
+  } catch (e) {
+    // colonnes nb_vues/nb_clics pas encore migrées : on renvoie des zéros
+    engagement.note = 'Migration engagement non appliquée';
+  }
+
   return {
     source: 'sous_commandes',
     commission_ventes_golivra_fcfa: 0,
     note: 'CA produits = montant marchand (sous_total). Commission GoLivra uniquement sur frais de livraison.',
     periodes,
+    engagement,
     mis_a_jour_le: new Date().toISOString(),
   };
 }

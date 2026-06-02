@@ -8,6 +8,7 @@ const {
   updateProfile,
   changePassword,
   resetPassword,
+  deleteAccount,
   getMyPreferences,
   patchMyPreferences,
 } = require('../controllers/auth.controller');
@@ -25,5 +26,7 @@ router.get('/preferences', authMiddleware, getMyPreferences);
 router.patch('/preferences', authMiddleware, patchMyPreferences);
 router.post('/change-password', authMiddleware, changePassword);
 router.post('/logout', authMiddleware, logout);
+router.delete('/account', authMiddleware, deleteAccount);
+router.post('/delete-account', authMiddleware, deleteAccount);
 
 module.exports = router;

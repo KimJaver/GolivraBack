@@ -40,6 +40,9 @@ function mapPlatToProduct(p, enterpriseId) {
     allergenes: Array.isArray(p.allergenes) ? p.allergenes : [],
     kind: 'plat',
     options: p.options ?? null,
+    nb_vues: Number(p.nb_vues ?? 0),
+    nb_clics: Number(p.nb_clics ?? 0),
+    nb_ventes: Number(p.nb_ventes ?? 0),
   };
 }
 
@@ -73,6 +76,9 @@ function mapArticleToProduct(a, enterpriseId) {
     marque: a.marque ?? null,
     poids_kg: a.poids_kg != null ? Number(a.poids_kg) : null,
     dimensions: a.dimensions ?? null,
+    nb_vues: Number(a.nb_vues ?? 0),
+    nb_clics: Number(a.nb_clics ?? 0),
+    nb_ventes: Number(a.nb_ventes ?? 0),
   };
 }
 
@@ -316,9 +322,7 @@ async function createProduct(req, res, next) {
   try {
     const { enterpriseId } = req.params;
     const {
-      nom,
       description,
-      prix,
       prixPromo,
       stock,
       stockIllimite,
@@ -341,6 +345,20 @@ async function createProduct(req, res, next) {
       dimensions,
     } = req.body;
     requireFields(req.body, ['nom', 'prix']);
+
+    const validators = require('../lib/validators');
+    const nomClean = validators.requireValid(req.body.nom, validators.validateProductName, 'nom');
+    const prixClean = validators.requireValid(req.body.prix, validators.validatePrice, 'prix');
+    const descriptionClean = description
+      ? validators.requireValid(description, (v) => validators.validateDescription(v, 500), 'description')
+      : null;
+    if (prixPromo != null && prixPromo !== '') {
+      validators.requireValid(prixPromo, validators.validatePrice, 'prixPromo');
+    }
+    if (stock !== undefined && stock !== null && stock !== '' && !stockIllimite) {
+      validators.requireValid(stock, validators.validateStock, 'stock');
+    }
+
     const imgUrl = parseImageUrl(imageUrl);
     const normalizedOptions = options !== undefined ? normalizeOptionGroups(options) : undefined;
 
@@ -355,11 +373,11 @@ async function createProduct(req, res, next) {
       if (req.auth.role !== 'admin' && req.auth.role !== 'restaurateur') {
         throw createHttpError(403, 'Seul un restaurateur peut ajouter des plats.');
       }
-      const prixNum = Number(prix);
+      const prixNum = Number(prixClean);
       const insertPlat = {
         restaurant_id: enterpriseId,
-        nom: String(nom).trim(),
-        description: description || null,
+        nom: nomClean,
+        description: descriptionClean,
         prix: prixNum,
         est_disponible: estDisponible !== undefined ? Boolean(estDisponible) : true,
         image_url: imgUrl,
@@ -389,7 +407,7 @@ async function createProduct(req, res, next) {
     if (req.auth.role !== 'admin' && req.auth.role !== 'commercant') {
       throw createHttpError(403, 'Seul un commerçant peut ajouter des articles.');
     }
-    const prixNum = Number(prix);
+    const prixNum = Number(prixClean);
     const stockVal = stockIllimite
       ? null
       : stock === undefined || stock === null
@@ -398,8 +416,8 @@ async function createProduct(req, res, next) {
 
     const insertArt = {
       boutique_id: enterpriseId,
-      nom: String(nom).trim(),
-      description: description || null,
+      nom: nomClean,
+      description: descriptionClean,
       prix: prixNum,
       stock: stockVal,
       est_disponible: estDisponible !== undefined ? Boolean(estDisponible) : true,
@@ -471,14 +489,27 @@ async function updateProduct(req, res, next) {
     const existing = await findProductInEstablishment(db, kind, enterpriseId, productId);
     if (!existing) throw createHttpError(404, 'Produit introuvable');
 
+    const validators = require('../lib/validators');
+    if (nom !== undefined) validators.requireValid(nom, validators.validateProductName, 'nom');
+    if (description !== undefined && description !== null) {
+      validators.requireValid(description, (v) => validators.validateDescription(v, 500), 'description');
+    }
+    if (prix !== undefined) validators.requireValid(prix, validators.validatePrice, 'prix');
+    if (prixPromo !== undefined && prixPromo !== null) {
+      validators.requireValid(prixPromo, validators.validatePrice, 'prixPromo');
+    }
+    if (stock !== undefined && stock !== null && stock !== '' && !stockIllimite) {
+      validators.requireValid(stock, validators.validateStock, 'stock');
+    }
+
     if (kind === 'restaurant') {
       if (req.auth.role !== 'admin' && req.auth.role !== 'restaurateur') {
         throw createHttpError(403, 'Seul un restaurateur peut modifier des plats.');
       }
       const patch = {};
-      if (nom !== undefined) patch.nom = String(nom).trim();
+      if (nom !== undefined) patch.nom = validators.validateProductName(nom).ok ? validators.validateProductName(nom).value : String(nom).trim();
       if (description !== undefined) patch.description = description || null;
-      if (prix !== undefined) patch.prix = Number(prix);
+      if (prix !== undefined) patch.prix = Number(validators.validatePrice(prix).value);
       if (imageUrl !== undefined) patch.image_url = parseImageUrl(imageUrl);
       if (estDisponible !== undefined) patch.est_disponible = Boolean(estDisponible);
       if (prixPromo !== undefined) patch.prix_promo = prixPromo === null ? null : Number(prixPromo);
@@ -507,9 +538,9 @@ async function updateProduct(req, res, next) {
       throw createHttpError(403, 'Seul un commerçant peut modifier des articles.');
     }
     const patch = {};
-    if (nom !== undefined) patch.nom = String(nom).trim();
+    if (nom !== undefined) patch.nom = validators.validateProductName(nom).ok ? validators.validateProductName(nom).value : String(nom).trim();
     if (description !== undefined) patch.description = description || null;
-    if (prix !== undefined) patch.prix = Number(prix);
+    if (prix !== undefined) patch.prix = Number(validators.validatePrice(prix).value);
     if (imageUrl !== undefined) patch.image_url = parseImageUrl(imageUrl);
     if (estDisponible !== undefined) patch.est_disponible = Boolean(estDisponible);
     if (stockIllimite === true) {
@@ -566,9 +597,90 @@ async function deleteProduct(req, res, next) {
   }
 }
 
+/**
+ * Tracking d'engagement : vue d'un produit (ouverture de la fiche commerce).
+ * Body optionnel `{ ids: [productId, ...] }` pour incrémenter plusieurs produits d'un coup
+ * (cas listing : on incrémente tous les produits visibles à l'ouverture).
+ * Sinon incrémente le produit identifié par :productId.
+ */
+async function trackProductView(req, res, next) {
+  try {
+    const { enterpriseId, productId } = req.params;
+    const { ids } = req.body || {};
+    const db = getDb();
+
+    const resolved = await resolveEstablishment(db, enterpriseId);
+    if (!resolved) return res.status(204).send(); // non-bloquant
+    const { kind } = resolved;
+    const table = kind === 'restaurant' ? 'plats' : 'articles';
+    const fk = kind === 'restaurant' ? 'restaurant_id' : 'boutique_id';
+
+    let targetIds = [];
+    if (Array.isArray(ids) && ids.length) {
+      targetIds = ids
+        .filter((x) => typeof x === 'string' && x.length === 36)
+        .slice(0, 50);
+    } else if (productId) {
+      targetIds = [productId];
+    }
+    if (!targetIds.length) return res.status(204).send();
+
+    // RPC atomique si disponible, sinon update best-effort
+    await Promise.all(
+      targetIds.map(async (id) => {
+        try {
+          await db.rpc('increment_product_view', { p_table: table, p_id: id });
+        } catch {
+          // fallback non-atomique
+          const { data: cur } = await db.from(table).select('id, nb_vues').eq('id', id).eq(fk, enterpriseId).maybeSingle();
+          if (cur) {
+            await db.from(table).update({ nb_vues: Number(cur.nb_vues ?? 0) + 1 }).eq('id', id);
+          }
+        }
+      }),
+    );
+    return res.status(204).send();
+  } catch (error) {
+    // tracking ne doit jamais casser l'UX
+    console.warn('[trackProductView] failed:', error?.message || error);
+    return res.status(204).send();
+  }
+}
+
+/**
+ * Tracking d'engagement : clic / ajout au panier d'un produit.
+ */
+async function trackProductClick(req, res, next) {
+  try {
+    const { enterpriseId, productId } = req.params;
+    const db = getDb();
+
+    const resolved = await resolveEstablishment(db, enterpriseId);
+    if (!resolved) return res.status(204).send();
+    const { kind } = resolved;
+    const table = kind === 'restaurant' ? 'plats' : 'articles';
+    const fk = kind === 'restaurant' ? 'restaurant_id' : 'boutique_id';
+
+    try {
+      await db.rpc('increment_product_click', { p_table: table, p_id: productId });
+    } catch {
+      const { data: cur } = await db.from(table).select('id, nb_clics').eq('id', productId).eq(fk, enterpriseId).maybeSingle();
+      if (cur) {
+        await db.from(table).update({ nb_clics: Number(cur.nb_clics ?? 0) + 1 }).eq('id', productId);
+      }
+    }
+    return res.status(204).send();
+  } catch (error) {
+    console.warn('[trackProductClick] failed:', error?.message || error);
+    return res.status(204).send();
+  }
+}
+
 module.exports = {
   listProducts,
   createProduct,
   updateProduct,
   deleteProduct,
+  trackProductView,
+  trackProductClick,
 };

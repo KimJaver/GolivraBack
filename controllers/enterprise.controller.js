@@ -206,8 +206,8 @@ async function getMyEnterprises(req, res, next) {
 
 async function createEnterprise(req, res, next) {
   try {
-    const { nom, type, description, telephone, adresse, latitude, longitude, categorieId } = req.body;
-    requireFields(req.body, ['nom', 'type', 'telephone', 'adresse', 'categorieId']);
+    const { type, description, latitude, longitude, categorieId } = req.body;
+    requireFields(req.body, ['type', 'categorieId']);
 
     if (!COMMERCE_TYPES.has(type)) {
       throw createHttpError(400, 'Type de commerce invalide (restaurant ou boutique).');
@@ -220,6 +220,16 @@ async function createEnterprise(req, res, next) {
       throw createHttpError(403, 'Seuls les comptes commerçant peuvent créer une boutique.');
     }
 
+    const validators = require('../lib/validators');
+    const nomClean = validators.requireValid(req.body.nom, validators.validateCommerceName, 'nom');
+    const telephoneClean = validators.requireValid(req.body.telephone, validators.validatePhoneCg, 'telephone');
+    const adresseClean = type === 'restaurant'
+      ? validators.requireValid(req.body.adresse, (v) => validators.validateAddress(v, true), 'adresse')
+      : validators.sanitizeText(req.body.adresse || '');
+    const descriptionClean = description
+      ? validators.requireValid(description, (v) => validators.validateDescription(v, 500), 'description')
+      : null;
+
     const statut = initialModerationStatus();
 
     const db = getDb();
@@ -229,10 +239,10 @@ async function createEnterprise(req, res, next) {
     const base = {
       proprietaire_id: req.auth.userId,
       categorie_id: resolvedCategoryId,
-      nom,
-      description: description || null,
-      telephone,
-      adresse_ligne1: adresse,
+      nom: nomClean,
+      description: descriptionClean,
+      telephone: telephoneClean,
+      adresse_ligne1: adresseClean,
       latitude: latitude ?? null,
       longitude: longitude ?? null,
       statut,
@@ -311,35 +321,43 @@ async function patchEnterprise(req, res, next) {
       if (row.proprietaire_id !== req.auth.userId && req.auth.role !== 'admin') {
         throw createHttpError(403, 'Action non autorisée.');
       }
+      const validators = require('../lib/validators');
       const updates = { updated_at: new Date().toISOString() };
       if (body.nom !== undefined) {
-        const n = String(body.nom || '').trim();
-        if (!n) throw createHttpError(400, 'Le nom ne peut pas être vide.');
+        const n = validators.requireValid(body.nom, validators.validateCommerceName, 'nom');
         updates.nom = n;
       }
       if (body.description !== undefined) {
-        updates.description = body.description ? String(body.description).trim() : null;
+        if (body.description === null || body.description === '') {
+          updates.description = null;
+        } else {
+          updates.description = validators.requireValid(body.description, (v) => validators.validateDescription(v, 500), 'description');
+        }
       }
       if (body.telephone !== undefined) {
-        const t = String(body.telephone || '').trim();
-        if (!t) throw createHttpError(400, 'Le téléphone est obligatoire.');
+        const t = validators.requireValid(body.telephone, validators.validatePhoneCg, 'telephone');
         updates.telephone = t;
       }
       if (body.adresse !== undefined || body.adresseQuartier !== undefined) {
         const ligne1 =
-          body.adresse !== undefined ? String(body.adresse || '').trim() : String(row.adresse_ligne1 || '').trim();
+          body.adresse !== undefined ? String(body.adresse || '') : String(row.adresse_ligne1 || '');
         const quartier =
           body.adresseQuartier !== undefined
-            ? String(body.adresseQuartier || '').trim()
-            : String(row.adresse_quartier || '').trim();
-        if (!quartier) {
+            ? String(body.adresseQuartier || '')
+            : String(row.adresse_quartier || '');
+        const ligne1Clean = validators.sanitizeText(ligne1);
+        const quartierClean = validators.sanitizeText(quartier);
+        if (!quartierClean) {
           throw createHttpError(400, 'Le quartier (arrondissement) est obligatoire.');
         }
-        if (ligne1.length < 4) {
-          throw createHttpError(400, 'Adresse détaillée trop courte (minimum 4 caractères).');
+        if (ligne1Clean.length < 5) {
+          throw createHttpError(400, 'Adresse détaillée trop courte (minimum 5 caractères).');
         }
-        updates.adresse_ligne1 = ligne1;
-        updates.adresse_quartier = quartier;
+        if (/^[0-9\s]+$/.test(ligne1Clean)) {
+          throw createHttpError(400, 'Adresse invalide (pas uniquement des chiffres).');
+        }
+        updates.adresse_ligne1 = ligne1Clean;
+        updates.adresse_quartier = quartierClean;
         updates.latitude = null;
         updates.longitude = null;
       }
@@ -403,6 +421,32 @@ async function patchEnterpriseSettings(_req, res, next) {
   }
 }
 
+/** Statistiques détaillées (CA + engagement) pour le commerce du vendeur authentifié. */
+async function getMyEnterpriseStats(req, res, next) {
+  try {
+    const { enterpriseId } = req.params;
+    const db = getDb();
+
+    const { data: resto } = await db.from('restaurants').select('id, proprietaire_id, nom').eq('id', enterpriseId).maybeSingle();
+    const { data: bout } = !resto
+      ? await db.from('boutiques').select('id, proprietaire_id, nom').eq('id', enterpriseId).maybeSingle()
+      : { data: null };
+
+    const row = resto || bout;
+    if (!row) throw createHttpError(404, 'Commerce introuvable.');
+    if (row.proprietaire_id !== req.auth.userId && req.auth.role !== 'admin') {
+      throw createHttpError(403, 'Action non autorisée.');
+    }
+
+    const kind = resto ? 'restaurant' : 'boutique';
+    const { getCommerceStatsForEnterprise } = require('../services/admin-commerce-stats.service');
+    const stats = await getCommerceStatsForEnterprise(db, enterpriseId, kind);
+    return res.json({ enterprise_id: enterpriseId, nom: row.nom, type: kind, ...stats });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   listEnterprises,
   listCategories,
@@ -411,4 +455,5 @@ module.exports = {
   getMyEnterprises,
   patchEnterprise,
   patchEnterpriseSettings,
+  getMyEnterpriseStats,
 };

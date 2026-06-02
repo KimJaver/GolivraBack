@@ -162,6 +162,287 @@ async function getDeliveryStatus(req, res, next) {
   }
 }
 
+const DELIVERY_TIMELINE_STEPS = [
+  { key: 'attribuee', titre: 'Livreur assigné', field: 'attribuee_at' },
+  { key: 'en_collecte', titre: 'En route vers le commerce', field: 'attribuee_at' },
+  { key: 'collectee', titre: 'Commande récupérée', field: 'collectee_at' },
+  { key: 'en_route', titre: 'En route vers le client', field: 'collectee_at' },
+  { key: 'livree', titre: 'Livraison terminée', field: 'livree_at' },
+];
+
+const DELIVERY_STATUS_ORDER = ['en_attente', 'attribuee', 'en_collecte', 'collectee', 'en_route', 'livree'];
+
+function buildDeliveryTimeline(livraison) {
+  const idx = DELIVERY_STATUS_ORDER.indexOf(livraison?.statut);
+  const currentIdx = idx === -1 ? 0 : idx;
+  return DELIVERY_TIMELINE_STEPS.map((s, i) => {
+    const reachedIdx = DELIVERY_STATUS_ORDER.indexOf(s.key);
+    let type = 'afaire';
+    let date = null;
+    if (reachedIdx !== -1 && reachedIdx <= currentIdx && livraison?.statut !== 'annulee') {
+      type = reachedIdx === currentIdx ? 'encours' : 'fait';
+      date = livraison?.[s.field] || livraison?.created_at || null;
+    } else if (livraison?.statut === 'annulee') {
+      type = i === 0 ? 'fait' : 'afaire';
+    }
+    return { titre: s.titre, date, type, key: s.key };
+  });
+}
+
+async function getDeliveryDetails(req, res, next) {
+  try {
+    const { deliveryId } = req.params;
+    const db = getDb();
+
+    const { data: livraison, error: livErr } = await db
+      .from('livraisons')
+      .select('*')
+      .eq('id', deliveryId)
+      .maybeSingle();
+    if (livErr) throw livErr;
+    if (!livraison) throw createHttpError(404, 'Livraison introuvable');
+
+    const isExterne = livraison.type_livraison === 'externe' || !livraison.sous_commande_id;
+
+    let commande = null;
+    let sousCommande = null;
+    let articles = [];
+    let client = null;
+    let commerce = null;
+    let livreurRow = null;
+    let livreurUser = null;
+
+    if (!isExterne && livraison.sous_commande_id) {
+      const { data: sc } = await db
+        .from('sous_commandes')
+        .select('*')
+        .eq('id', livraison.sous_commande_id)
+        .maybeSingle();
+      sousCommande = sc;
+      if (sc?.commande_id) {
+        const { data: c } = await db.from('commandes').select('*').eq('id', sc.commande_id).maybeSingle();
+        commande = c;
+      }
+      if (sc) {
+        const { data: items } = await db
+          .from('sous_commande_items')
+          .select('id, nom_produit, description_produit, quantite, prix_unitaire')
+          .eq('sous_commande_id', sc.id);
+        articles = items || [];
+      }
+      if (sc?.restaurant_id) {
+        const { data: r } = await db
+          .from('restaurants')
+          .select('id, nom, telephone, adresse_ligne1, image_url')
+          .eq('id', sc.restaurant_id)
+          .maybeSingle();
+        commerce = r ? { ...r, type: 'restaurant' } : null;
+      }
+      if (sc?.boutique_id) {
+        const { data: b } = await db
+          .from('boutiques')
+          .select('id, nom, telephone, adresse_ligne1, image_url')
+          .eq('id', sc.boutique_id)
+          .maybeSingle();
+        commerce = b ? { ...b, type: 'boutique' } : null;
+      }
+    } else {
+      if (livraison.restaurant_id) {
+        const { data: r } = await db
+          .from('restaurants')
+          .select('id, nom, telephone, adresse_ligne1, image_url')
+          .eq('id', livraison.restaurant_id)
+          .maybeSingle();
+        commerce = r ? { ...r, type: 'restaurant' } : null;
+      }
+      if (livraison.boutique_id) {
+        const { data: b } = await db
+          .from('boutiques')
+          .select('id, nom, telephone, adresse_ligne1, image_url')
+          .eq('id', livraison.boutique_id)
+          .maybeSingle();
+        commerce = b ? { ...b, type: 'boutique' } : null;
+      }
+    }
+
+    if (commande?.client_id) {
+      const { data: u } = await db
+        .from('utilisateurs')
+        .select('id, nom, telephone, avatar_url')
+        .eq('id', commande.client_id)
+        .maybeSingle();
+      client = u;
+    }
+
+    if (livraison.livreur_id) {
+      const { data: lr } = await db
+        .from('livreurs')
+        .select('id, type_vehicule, note_moyenne, nb_livraisons_reussies, utilisateur_id, latitude_actuelle, longitude_actuelle, derniere_position_at')
+        .eq('id', livraison.livreur_id)
+        .maybeSingle();
+      livreurRow = lr;
+      if (lr?.utilisateur_id) {
+        const { data: u } = await db
+          .from('utilisateurs')
+          .select('id, nom, telephone, avatar_url')
+          .eq('id', lr.utilisateur_id)
+          .maybeSingle();
+        livreurUser = u;
+      }
+    }
+
+    const role = req.auth.role;
+    if (role === 'client') {
+      if (commande && commande.client_id !== req.auth.userId) {
+        throw createHttpError(403, 'Accès non autorisé à cette livraison');
+      }
+      if (isExterne) {
+        throw createHttpError(403, 'Accès non autorisé');
+      }
+    } else if (role === 'restaurateur' || role === 'commercant') {
+      const owns = commerce?.proprietaire_id === req.auth.userId;
+      if (!owns) throw createHttpError(403, 'Accès non autorisé à cette livraison');
+    } else if (role === 'livreur') {
+      const myLivreurId = await getLivreurIdForUser(db, req.auth.userId);
+      if (livraison.livreur_id !== myLivreurId) {
+        throw createHttpError(403, 'Accès non autorisé à cette livraison');
+      }
+    }
+
+    let paiement = null;
+    if (commande?.id) {
+      const { data: p } = await db
+        .from('paiements')
+        .select('id, statut, methode, montant, paye_at')
+        .eq('commande_id', commande.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      paiement = p;
+    }
+
+    const adresseLivraison = livraison.adresse_livraison_snapshot && typeof livraison.adresse_livraison_snapshot === 'object'
+      ? livraison.adresse_livraison_snapshot.texte
+      : (typeof livraison.adresse_livraison_snapshot === 'string' ? livraison.adresse_livraison_snapshot : '');
+
+    const adresseRetrait = livraison.adresse_collecte_snapshot && typeof livraison.adresse_collecte_snapshot === 'object'
+      ? livraison.adresse_collecte_snapshot.texte
+      : (typeof livraison.adresse_collecte_snapshot === 'string' ? livraison.adresse_collecte_snapshot : commerce?.adresse_ligne1 || '');
+
+    const distanceKm = (() => {
+      if (
+        livreurRow?.latitude_actuelle != null &&
+        livreurRow?.longitude_actuelle != null &&
+        livraison?.latitude_livraison != null &&
+        livraison?.longitude_livraison != null
+      ) {
+        const R = 6371;
+        const toRad = (d) => (d * Math.PI) / 180;
+        const dLat = toRad(livraison.latitude_livraison - livreurRow.latitude_actuelle);
+        const dLon = toRad(livraison.longitude_livraison - livreurRow.longitude_actuelle);
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(toRad(livreurRow.latitude_actuelle)) *
+            Math.cos(toRad(livraison.latitude_livraison)) *
+            Math.sin(dLon / 2) ** 2;
+        return Number((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) ).toFixed(2));
+      }
+      return null;
+    })();
+
+    return res.json({
+      livraison: {
+        id: livraison.id,
+        statut: livraison.statut,
+        type_livraison: isExterne ? 'externe' : 'commande',
+        created_at: livraison.created_at,
+        attribuee_at: livraison.attribuee_at,
+        collectee_at: livraison.collectee_at,
+        livree_at: livraison.livree_at,
+        annulee_at: livraison.annulee_at || null,
+        montant_total: livraison.montant_total != null ? Number(livraison.montant_total) : null,
+        frais_livraison: livraison.frais_livraison != null ? Number(livraison.frais_livraison) : null,
+        montant_livreur: livraison.montant_livreur != null ? Number(livraison.montant_livreur) : null,
+        commission_logistique: livraison.commission_logistique != null ? Number(livraison.commission_logistique) : null,
+        note: livraison.note || null,
+        adresse_livraison: adresseLivraison || '',
+        adresse_retrait: adresseRetrait || '',
+        client_nom: livraison.client_nom || client?.nom || null,
+        client_telephone: livraison.client_telephone || client?.telephone || null,
+      },
+      livreur: livreurRow
+        ? {
+            id: livreurRow.id,
+            nom: livreurUser?.nom || 'Livreur',
+            telephone: livreurUser?.telephone || null,
+            image_url: livreurUser?.avatar_url || null,
+            type_vehicule: livreurRow.type_vehicule || null,
+            note_moyenne: livreurRow.note_moyenne != null ? Number(livreurRow.note_moyenne) : null,
+            nb_livraisons_reussies: livreurRow.nb_livraisons_reussies || 0,
+            position_actuelle:
+              livreurRow.latitude_actuelle != null && livreurRow.longitude_actuelle != null
+                ? { latitude: livreurRow.latitude_actuelle, longitude: livreurRow.longitude_actuelle, at: livreurRow.derniere_position_at }
+                : null,
+          }
+        : null,
+      commerce: commerce
+        ? {
+            id: commerce.id,
+            type: commerce.type,
+            nom: commerce.nom,
+            telephone: commerce.telephone || null,
+            adresse: commerce.adresse_ligne1 || null,
+            image_url: commerce.image_url || null,
+          }
+        : null,
+      commande: commande
+        ? {
+            id: commande.id,
+            numero: commande.numero,
+            statut: commande.statut,
+            total: commande.total != null ? Number(commande.total) : null,
+            cree_le: commande.created_at,
+            methode_paiement: commande.methode_paiement || null,
+          }
+        : null,
+      sous_commande: sousCommande
+        ? {
+            id: sousCommande.id,
+            numero: sousCommande.numero,
+            statut: sousCommande.statut,
+            total: sousCommande.total != null ? Number(sousCommande.total) : null,
+            frais_livraison: sousCommande.frais_livraison != null ? Number(sousCommande.frais_livraison) : null,
+            mode_livraison: sousCommande.mode_livraison || 'golivra',
+            prete_at: sousCommande.prete_at || null,
+            collectee_at: sousCommande.collectee_at || null,
+            livree_at: sousCommande.livree_at || null,
+            reglee_at: sousCommande.reglee_at || null,
+          }
+        : null,
+      articles: articles.map((a) => ({
+        id: a.id,
+        nom: a.nom_produit,
+        description: a.description_produit || null,
+        quantite: a.quantite,
+        prix_unitaire: a.prix_unitaire != null ? Number(a.prix_unitaire) : null,
+      })),
+      paiement: paiement
+        ? {
+            id: paiement.id,
+            statut: paiement.statut,
+            methode: paiement.methode,
+            montant: paiement.montant != null ? Number(paiement.montant) : null,
+            paye_at: paiement.paye_at,
+          }
+        : null,
+      distance_km: distanceKm,
+      timeline: buildDeliveryTimeline(livraison),
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function findVendorSousCommandeIdsForOrder(db, userId, commandeId) {
   const { data: scs, error } = await db
     .from('sous_commandes')
@@ -479,6 +760,7 @@ async function completeDelivery(req, res, next) {
 
 module.exports = {
   getDeliveryStatus,
+  getDeliveryDetails,
   getCourierProfile,
   listCourierMissions,
   updateCourierAvailability,

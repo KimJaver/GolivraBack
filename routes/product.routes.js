@@ -4,6 +4,8 @@ const {
   createProduct,
   updateProduct,
   deleteProduct,
+  trackProductView,
+  trackProductClick,
 } = require('../controllers/product.controller');
 const {
   listProductCategories,
@@ -37,5 +39,10 @@ router.delete(
   requireRoles(MERCHANT_ROLES),
   deleteProduct,
 );
+
+// Tracking engagement (public, auth optionnelle)
+router.post('/enterprise/:enterpriseId/views', optionalAuthMiddleware, trackProductView);
+router.post('/enterprise/:enterpriseId/:productId/view', optionalAuthMiddleware, trackProductView);
+router.post('/enterprise/:enterpriseId/:productId/click', optionalAuthMiddleware, trackProductClick);
 
 module.exports = router;

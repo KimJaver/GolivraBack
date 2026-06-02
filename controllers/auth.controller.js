@@ -108,30 +108,34 @@ async function assertSignupsAllowed(db) {
 
 async function resetPassword(req, res, next) {
   try {
-    const { telephone: telephoneRaw, otpCode, newPassword } = req.body;
+    const { telephone: telephoneRaw, otpCode: otpRaw, newPassword } = req.body;
     requireFields(req.body, ['telephone', 'otpCode', 'newPassword']);
 
-    if (typeof newPassword !== 'string' || newPassword.length < 6) {
-      throw createHttpError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères.');
-    }
+    const validators = require('../lib/validators');
+    const telephoneClean = validators.requireValid(telephoneRaw, validators.validatePhoneCg, 'telephone');
+    const otpClean = validators.requireValid(otpRaw, validators.validateOtp, 'otpCode');
+    validators.requireValid(newPassword, validators.validatePassword, 'newPassword');
 
-    const telephone = normalizeCgE164(telephoneRaw);
+    const telephone = normalizeCgE164(telephoneClean);
     if (!telephone) {
       throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
     }
 
     const db = getDb();
-    const otpRow = await findValidOtpRow(db, telephone, otpCode);
+    const otpRow = await findValidOtpRow(db, telephone, otpClean);
 
     const { data: user, error: userErr } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, email, role_id, est_approuve, est_actif, avatar_url')
+      .select('id, nom, telephone, email, role_id, est_approuve, est_actif, est_supprime, avatar_url')
       .eq('telephone', telephone)
       .maybeSingle();
 
     if (userErr) throw userErr;
     if (!user) {
       throw createHttpError(404, 'Aucun compte associé à ce numéro.');
+    }
+    if (user.est_supprime === true) {
+      throw createHttpError(410, 'Ce compte a été supprimé.');
     }
     if (user.est_actif === false) {
       throw createHttpError(403, 'Ce compte est désactivé.');
@@ -197,12 +201,18 @@ async function register(req, res, next) {
   try {
     const rawRole = req.body.role;
     const role = typeof rawRole === 'string' && rawRole.trim() ? rawRole.trim() : 'client';
-    const { nom, telephone: telephoneRaw, motDePasse, otpCode, imageUrl } = req.body;
-    requireFields(req.body, ['nom', 'telephone', 'motDePasse', 'otpCode']);
+    const { telephone: telephoneRaw, motDePasse, otpCode, imageUrl } = req.body;
+    requireFields(req.body, ['telephone', 'motDePasse', 'otpCode']);
     const avatarUrl =
       typeof imageUrl === 'string' && imageUrl.trim().startsWith('http') ? imageUrl.trim() : null;
 
-    const telephone = normalizeCgE164(telephoneRaw);
+    const validators = require('../lib/validators');
+    const nomClean = validators.requireValid(req.body.nom, validators.validatePersonName, 'nom');
+    const telephoneClean = validators.requireValid(telephoneRaw, validators.validatePhoneCg, 'telephone');
+    validators.requireValid(motDePasse, validators.validatePassword, 'motDePasse');
+    const otpClean = validators.requireValid(otpCode, validators.validateOtp, 'otpCode');
+
+    const telephone = normalizeCgE164(telephoneClean);
     if (!telephone) {
       throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
     }
@@ -213,7 +223,7 @@ async function register(req, res, next) {
       throw createHttpError(403, 'Inscription réservée aux rôles client, restaurateur ou commerçant.');
     }
 
-    const otpRow = await findValidOtpRow(db, telephone, otpCode);
+    const otpRow = await findValidOtpRow(db, telephone, otpClean);
 
     const { data: roleRow, error: roleError } = await db
       .from('roles')
@@ -227,7 +237,7 @@ async function register(req, res, next) {
     const { data, error } = await db
       .from('utilisateurs')
       .insert({
-        nom,
+        nom: nomClean,
         telephone,
         mot_de_passe_hash: hashedPassword,
         role_id: roleRow.id,
@@ -308,12 +318,16 @@ async function login(req, res, next) {
 
     const { data: user, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, avatar_url')
+      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime, avatar_url')
       .eq('telephone', telephone)
       .single();
 
     if (error || !user) {
       throw createHttpError(401, 'Téléphone ou mot de passe incorrect');
+    }
+
+    if (user.est_supprime === true) {
+      throw createHttpError(410, 'Ce compte a été supprimé. Créez un nouveau compte pour utiliser GoLivra.');
     }
 
     if (user.est_actif === false) {
@@ -350,13 +364,17 @@ async function staffLogin(req, res, next) {
 
     const { data: user, error } = await db
       .from('utilisateurs')
-      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, avatar_url')
+      .select('id, nom, telephone, email, mot_de_passe_hash, role_id, est_approuve, est_actif, est_supprime, avatar_url')
       .eq('email', email)
       .maybeSingle();
 
     if (error) throw error;
     if (!user) {
       throw createHttpError(401, 'E-mail ou mot de passe incorrect');
+    }
+
+    if (user.est_supprime === true) {
+      throw createHttpError(410, 'Ce compte a été supprimé.');
     }
 
     const { data: roleRow } = await db.from('roles').select('nom').eq('id', user.role_id).maybeSingle();
@@ -471,14 +489,14 @@ async function updateProfile(req, res, next) {
     const updates = {};
 
     if (hasNom) {
-      const n = typeof nom === 'string' ? nom.trim() : '';
-      if (!n) throw createHttpError(400, 'Le nom ne peut pas être vide.');
-      if (n.length > 100) throw createHttpError(400, 'Nom trop long.');
-      updates.nom = n;
+      const validators = require('../lib/validators');
+      updates.nom = validators.requireValid(nom, validators.validatePersonName, 'nom');
     }
 
     if (hasTel) {
-      const normalized = normalizeCgE164(telephone);
+      const validators = require('../lib/validators');
+      const telClean = validators.requireValid(telephone, validators.validatePhoneCg, 'telephone');
+      const normalized = normalizeCgE164(telClean);
       if (!normalized) {
         throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
       }
@@ -526,13 +544,131 @@ async function updateProfile(req, res, next) {
   }
 }
 
+/**
+ * Suppression du compte par l'utilisateur (RGPD-friendly).
+ * - Vérifie le mot de passe pour confirmer l'intention.
+ * - Soft delete : anonymise les PII (nom, email, téléphone, avatar), bloque la connexion.
+ * - Révoque toutes les sessions actives.
+ * - Supprime tous les push tokens (plus aucune notification).
+ * - Les données historiques (commandes, factures…) sont conservées via FK pour l'audit légal.
+ */
+async function deleteAccount(req, res, next) {
+  try {
+    const { password, reason } = req.body || {};
+    requireFields(req.body, ['password']);
+
+    const db = getDb();
+    const userId = req.auth.userId;
+
+    const { data: user, error } = await db
+      .from('utilisateurs')
+      .select('id, role_id, mot_de_passe_hash, telephone, est_supprime')
+      .eq('id', userId)
+      .single();
+
+    if (error || !user) throw createHttpError(404, 'Utilisateur introuvable');
+    if (user.est_supprime === true) {
+      throw createHttpError(410, 'Ce compte a déjà été supprimé.');
+    }
+
+    const ok = await verifyPasswordAndMaybeUpgrade(db, user, password);
+    if (!ok) throw createHttpError(401, 'Mot de passe incorrect.');
+
+    // Empêche un marchand de supprimer son compte s'il a une boutique/restaurant active
+    // (force d'abord un transfert ou suppression par l'admin).
+    const { data: roleRow } = await db.from('roles').select('nom').eq('id', user.role_id).maybeSingle();
+    const roleNom = roleRow?.nom ?? null;
+    if (roleNom === 'restaurateur' || roleNom === 'commercant') {
+      const [{ count: nbRest }, { count: nbBout }] = await Promise.all([
+        db.from('restaurants').select('id', { count: 'exact', head: true }).eq('proprietaire_id', userId).neq('statut', 'suspendu'),
+        db.from('boutiques').select('id', { count: 'exact', head: true }).eq('proprietaire_id', userId).neq('statut', 'suspendu'),
+      ]);
+      if ((nbRest ?? 0) > 0 || (nbBout ?? 0) > 0) {
+        throw createHttpError(
+          409,
+          'Vous gérez encore un commerce actif. Contactez le support GoLivra pour transférer ou fermer votre commerce avant de supprimer votre compte.',
+        );
+      }
+    }
+
+    if (roleNom === 'livreur') {
+      const { data: liv } = await db
+        .from('livreurs')
+        .select('id, est_disponible')
+        .eq('utilisateur_id', userId)
+        .maybeSingle();
+      if (liv?.id) {
+        const { count: enCours } = await db
+          .from('livraisons')
+          .select('id', { count: 'exact', head: true })
+          .eq('livreur_id', liv.id)
+          .in('statut', ['attribuee', 'en_collecte', 'en_route']);
+        if ((enCours ?? 0) > 0) {
+          throw createHttpError(409, 'Vous avez des livraisons en cours. Terminez-les avant de supprimer votre compte.');
+        }
+        await db.from('livreurs').update({ est_disponible: false }).eq('id', liv.id);
+      }
+    }
+
+    // 1) Push tokens : suppression totale
+    try {
+      const { unregisterAllTokensForUser } = require('../services/push.service');
+      await unregisterAllTokensForUser(db, userId);
+    } catch (e) {
+      // non bloquant
+      console.warn('[delete-account] push cleanup failed:', e?.message || e);
+    }
+
+    // 2) Sessions : révocation
+    try {
+      await db.from('sessions').delete().eq('utilisateur_id', userId);
+    } catch (e) {
+      console.warn('[delete-account] sessions cleanup failed:', e?.message || e);
+    }
+
+    // 3) Anonymisation des PII
+    const anonTag = String(userId).slice(0, 8);
+    const anonPhone = `+0000000${anonTag}`.slice(0, 20);
+    const anonReason = typeof reason === 'string' ? reason.trim().slice(0, 500) : null;
+
+    const { error: anonErr } = await db
+      .from('utilisateurs')
+      .update({
+        est_supprime: true,
+        est_actif: false,
+        supprime_at: new Date().toISOString(),
+        raison_suppression: anonReason || null,
+        nom: 'Compte supprimé',
+        telephone: anonPhone,
+        email: null,
+        avatar_url: null,
+        mot_de_passe_hash: null,
+      })
+      .eq('id', userId);
+
+    if (anonErr) {
+      // Si on échoue ici on remonte une 500 — l'utilisateur peut réessayer.
+      throw createHttpError(500, "Impossible de finaliser la suppression. Réessayez ou contactez le support.");
+    }
+
+    return res.json({
+      message: 'Votre compte a été supprimé. Merci d’avoir utilisé GoLivra.',
+      supprime_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function changePassword(req, res, next) {
   try {
     const { currentPassword, newPassword } = req.body;
     requireFields(req.body, ['currentPassword', 'newPassword']);
 
-    if (typeof newPassword !== 'string' || newPassword.length < 6) {
-      throw createHttpError(400, 'Le nouveau mot de passe doit contenir au moins 6 caractères.');
+    const validators = require('../lib/validators');
+    validators.requireValid(newPassword, validators.validatePassword, 'newPassword');
+    if (newPassword === currentPassword) {
+      throw createHttpError(400, 'Le nouveau mot de passe doit être différent de l\'ancien.');
     }
 
     const db = getDb();
@@ -574,6 +710,7 @@ module.exports = {
   updateProfile,
   changePassword,
   resetPassword,
+  deleteAccount,
   getMyPreferences,
   patchMyPreferences,
 };

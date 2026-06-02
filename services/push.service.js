@@ -194,6 +194,7 @@ module.exports = {
   unregisterToken,
   unregisterAllTokensForUser,
   getTokensForUser,
+  getTokensForUsers,
   sendPushToUser,
   sendPushToUsers,
 };

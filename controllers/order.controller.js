@@ -385,10 +385,27 @@ async function getOrderDetails(req, res, next) {
       .eq('commande_id', orderId);
     if (scErr) throw scErr;
 
+    const scIds = (sousCommandes || []).map((s) => s.id);
+    const { data: livraisons } = scIds.length
+      ? await db.from('livraisons').select('id, statut, type_livraison').in('sous_commande_id', scIds)
+      : { data: [] };
+
+    const livraisonBySc = new Map();
+    for (const liv of livraisons || []) {
+      if (!livraisonBySc.has(liv.sous_commande_id)) livraisonBySc.set(liv.sous_commande_id, []);
+      livraisonBySc.get(liv.sous_commande_id).push(liv);
+    }
+
     const enriched = [];
     for (const sc of sousCommandes || []) {
       const { data: items } = await db.from('sous_commande_items').select('*').eq('sous_commande_id', sc.id);
-      enriched.push({ ...sc, articles: items || [] });
+      const livs = livraisonBySc.get(sc.id) || [];
+      enriched.push({
+        ...sc,
+        articles: items || [],
+        livraisons: livs.map((l) => ({ id: l.id, statut: l.statut, type_livraison: l.type_livraison })),
+        livraison_id: livs[0]?.id || null,
+      });
     }
 
     const first = sousCommandes && sousCommandes[0];
@@ -397,6 +414,7 @@ async function getOrderDetails(req, res, next) {
     return res.json({
       ...mapCommandeListRow(order, eid),
       sousCommandes: enriched,
+      livraisons: (livraisons || []).map((l) => ({ id: l.id, statut: l.statut, type_livraison: l.type_livraison })),
     });
   } catch (error) {
     return next(error);

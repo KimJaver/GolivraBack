@@ -22,19 +22,26 @@ function mapAddress(row) {
 }
 
 function validateAddressBody(body, { requireAll = true } = {}) {
-  const quartier = typeof body.quartier === 'string' ? body.quartier.trim() : '';
-  const ligne1 = typeof body.ligne1 === 'string' ? body.ligne1.trim() : '';
-  const instructions = typeof body.instructions === 'string' ? body.instructions.trim() : null;
-  const point_reperes = typeof body.point_reperes === 'string' ? body.point_reperes.trim() : null;
-  const libelle = typeof body.libelle === 'string' ? body.libelle.trim() : null;
+  const validators = require('../lib/validators');
+  const quartier = typeof body.quartier === 'string' ? validators.sanitizeText(body.quartier) : '';
+  const ligne1 = typeof body.ligne1 === 'string' ? validators.sanitizeText(body.ligne1) : '';
+  const instructions = typeof body.instructions === 'string' ? validators.sanitizeText(body.instructions) : null;
+  const point_reperes = typeof body.point_reperes === 'string' ? validators.sanitizeText(body.point_reperes) : null;
+  const libelle = typeof body.libelle === 'string' ? validators.sanitizeText(body.libelle) : null;
   const type = typeof body.type === 'string' ? body.type.trim() : 'domicile';
-  const ville = typeof body.ville === 'string' && body.ville.trim() ? body.ville.trim() : 'Brazzaville';
-  const pays = typeof body.pays === 'string' && body.pays.trim() ? body.pays.trim() : 'Congo';
+  const ville = typeof body.ville === 'string' && body.ville.trim() ? validators.sanitizeText(body.ville) : 'Brazzaville';
+  const pays = typeof body.pays === 'string' && body.pays.trim() ? validators.sanitizeText(body.pays) : 'Congo';
 
   if (requireAll) {
     if (!quartier) throw createHttpError(400, 'Le quartier est obligatoire.');
-    if (!ligne1 || ligne1.length < 4) {
+    if (!ligne1 || ligne1.length < 5) {
       throw createHttpError(400, 'Décrivez votre adresse (rue, repère, immeuble…).');
+    }
+    if (/^[0-9\s]+$/.test(ligne1)) {
+      throw createHttpError(400, 'Adresse invalide (pas uniquement des chiffres).');
+    }
+    if (!/\p{L}/u.test(ligne1)) {
+      throw createHttpError(400, 'L\'adresse doit contenir au moins une lettre (rue, repère ou quartier).');
     }
   }
 
