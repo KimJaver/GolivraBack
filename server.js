@@ -28,6 +28,7 @@ const pawapayWebhookRoutes = require('./routes/pawapay-webhook.routes');
 const paymentRoutes = require('./payments/routes/payment.routes');
 const payoutRoutes = require('./payments/routes/payout.routes');
 const adminPayoutRoutes = require('./payments/routes/admin-payout.routes');
+const sandboxRoutes = require('./payments/routes/sandbox.routes');
 const paymentsPawapayWebhookRoutes = require('./payments/routes/pawapay-webhook.routes');
 const { requestContextMiddleware } = require('./middlewares/request-context.middleware');
 const { getDb } = require('./config/db');
@@ -160,6 +161,7 @@ app.use('/api/admin/usage', usageAdminRoutes);
 // et délègue désormais au nouveau service via le wrapper payment.service.
 app.use('/api', payoutRoutes);
 app.use('/api/admin', adminPayoutRoutes);
+app.use('/api/admin', sandboxRoutes);
 
 function httpErrorCode(status, err) {
   const raw = err.code;

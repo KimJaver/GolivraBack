@@ -127,6 +127,11 @@ async function initiate(db, commandeId, clientId, payload) {
       { fieldName: 'commandeId', fieldValue: commande.id },
       { fieldName: 'utilisateurId', fieldValue: clientId },
     ],
+    // Contexte sandbox : le backend swappe le numéro en interne si besoin
+    sandboxContext: {
+      utilisateurId: clientId,
+      commandeId: commande.id,
+    },
   });
 
   if (!apiRes.ok) {

@@ -178,6 +178,9 @@ async function processWithdrawal(db, withdrawalId, { source = 'manual' } = {}) {
       pays: 'CG',
       nomBeneficiaire: withdrawal.nomBeneficiaire,
       metadata: requestPayload.metadata,
+      sandboxContext: {
+        utilisateurId: withdrawal.utilisateurId,
+      },
     });
   } catch (err) {
     apiResponse = { ok: false, error: err.message };

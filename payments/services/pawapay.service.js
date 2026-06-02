@@ -67,57 +67,110 @@ async function httpJson(path, body, { method = 'POST' } = {}) {
 
 /**
  * Initie un deposit (paiement client).
+ *
+ * En mode sandbox, `numeroCompte` peut être swappé automatiquement par le
+ * scénario actif (cf. pawapay-sandbox.service). Le mobile envoie toujours
+ * le vrai numéro ; le backend fait le swap.
+ *
  * @see https://docs.pawapay.io/#operation/initiateDeposit
  */
-async function initiateDeposit({ depositId, montantFcfa, currency = 'XAF', methode, numeroCompte, pays = 'CG', metadata = [] }) {
+async function initiateDeposit({ depositId, montantFcfa, currency = 'XAF', methode, numeroCompte, pays = 'CG', metadata = [], sandboxContext = null }) {
+  const sandboxResolution = sandboxContext ? resolveSandboxPhone(sandboxContext, numeroCompte, methode) : null;
+  const finalPhone = sandboxResolution?.numeroCompte || numeroCompte;
+  const finalMethode = sandboxResolution?.methode || methode;
+  const finalPays = sandboxResolution?.pays || pays;
+
   const payload = {
     depositId,
     amount: String(Number(montantFcfa).toFixed(2)),
     currency: String(currency || 'XAF').toUpperCase(),
-    correspondent: countryToCorrespondent(pays, methode),
+    correspondent: countryToCorrespondent(finalPays, finalMethode),
     payer: {
       type: 'MSISDN',
-      address: { value: normalizePhone(numeroCompte) },
+      address: { value: normalizePhone(finalPhone) },
     },
     customerMessage: 'GoLivra',
     clientReferenceId: depositId,
-    metadata,
+    metadata: appendSandboxMetadata(metadata, sandboxResolution),
   };
   try {
     const json = await httpJson('/deposits', payload);
-    return { ok: true, simulated: false, data: json };
+    return { ok: true, simulated: false, data: json, sandbox: sandboxResolution };
   } catch (err) {
-    if (!isLive()) return { ok: true, simulated: true, data: null };
-    return { ok: false, simulated: false, error: err.message, body: err.body };
+    if (!isLive()) return { ok: true, simulated: true, data: null, sandbox: sandboxResolution };
+    return { ok: false, simulated: false, error: err.message, body: err.body, sandbox: sandboxResolution };
   }
 }
 
 /**
  * Initie un payout (retrait vers Mobile Money).
+ * Même logique sandbox que initiateDeposit.
+ *
  * @see https://docs.pawapay.io/#operation/initiatePayout
  */
-async function initiatePayout({ payoutId, montantFcfa, currency = 'XAF', methode, numeroCompte, pays = 'CG', nomBeneficiaire, metadata = [] }) {
+async function initiatePayout({ payoutId, montantFcfa, currency = 'XAF', methode, numeroCompte, pays = 'CG', nomBeneficiaire, metadata = [], sandboxContext = null }) {
+  const sandboxResolution = sandboxContext ? resolveSandboxPhone(sandboxContext, numeroCompte, methode) : null;
+  const finalPhone = sandboxResolution?.numeroCompte || numeroCompte;
+  const finalMethode = sandboxResolution?.methode || methode;
+  const finalPays = sandboxResolution?.pays || pays;
+
   const payload = {
     payoutId,
     amount: String(Number(montantFcfa).toFixed(2)),
     currency: String(currency || 'XAF').toUpperCase(),
-    correspondent: countryToCorrespondent(pays, methode),
+    correspondent: countryToCorrespondent(finalPays, finalMethode),
     recipient: {
       type: 'MSISDN',
-      address: { value: normalizePhone(numeroCompte) },
+      address: { value: normalizePhone(finalPhone) },
     },
     customerMessage: 'GoLivra retrait',
     clientReferenceId: payoutId,
-    metadata,
+    metadata: appendSandboxMetadata(metadata, sandboxResolution),
     ...(nomBeneficiaire ? { recipientName: nomBeneficiaire } : {}),
   };
   try {
     const json = await httpJson('/payouts', payload);
-    return { ok: true, simulated: false, data: json };
+    return { ok: true, simulated: false, data: json, sandbox: sandboxResolution };
   } catch (err) {
-    if (!isLive()) return { ok: true, simulated: true, data: null };
-    return { ok: false, simulated: false, error: err.message, body: err.body };
+    if (!isLive()) return { ok: true, simulated: true, data: null, sandbox: sandboxResolution };
+    return { ok: false, simulated: false, error: err.message, body: err.body, sandbox: sandboxResolution };
   }
+}
+
+// ── Helpers sandbox (import paresseux) ──────────────────────────────────────
+let _sandbox = null;
+function getSandbox() {
+  if (_sandbox === null) {
+    try {
+      // eslint-disable-next-line global-require
+      _sandbox = require('./pawapay-sandbox.service');
+    } catch {
+      _sandbox = { resolvePhoneForRequest: () => null };
+    }
+  }
+  return _sandbox;
+}
+
+function resolveSandboxPhone(sandboxContext, numeroCompte, methode) {
+  const sandbox = getSandbox();
+  if (typeof sandbox.resolvePhoneForRequest !== 'function') return null;
+  return sandbox.resolvePhoneForRequest({
+    utilisateurId: sandboxContext?.utilisateurId || null,
+    commandeId: sandboxContext?.commandeId || null,
+    numeroCompte,
+    operateur: methode, // 'mtn_money' | 'airtel_money' (sandbox résout la clé MTN_COG / AIRTEL_COG)
+  });
+}
+
+function appendSandboxMetadata(metadata, sandboxResolution) {
+  if (!sandboxResolution || sandboxResolution.mode !== 'sandbox') return metadata;
+  return [
+    ...(metadata || []),
+    { fieldName: 'sandbox_scenario', fieldValue: sandboxResolution.scenario || 'NONE' },
+    { fieldName: 'sandbox_operateur', fieldValue: sandboxResolution.operateur || 'NONE' },
+    { fieldName: 'sandbox_statut_attendu', fieldValue: sandboxResolution.statutAttendu || 'NONE' },
+    { fieldName: 'sandbox_numero_reel', fieldValue: sandboxResolution.numeroReel || 'NONE' },
+  ];
 }
 
 /**
