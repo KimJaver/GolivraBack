@@ -198,6 +198,10 @@ async function patchMyPreferences(req, res, next) {
 }
 
 async function register(req, res, next) {
+  const db = getDb();
+  let createdUserId = null;
+  let otpRowId = null;
+
   try {
     const rawRole = req.body.role;
     const role = typeof rawRole === 'string' && rawRole.trim() ? rawRole.trim() : 'client';
@@ -217,13 +221,14 @@ async function register(req, res, next) {
       throw createHttpError(400, 'Numéro de téléphone invalide. Indiquez +242 suivi de 9 chiffres (Congo).');
     }
 
-    const db = getDb();
+    // ── Garde-fous AVANT toute écriture ───────────────────────────────
     await assertSignupsAllowed(db);
     if (!PUBLIC_REGISTER_ROLES.has(role)) {
       throw createHttpError(403, 'Inscription réservée aux rôles client, restaurateur ou commerçant.');
     }
 
     const otpRow = await findValidOtpRow(db, telephone, otpClean);
+    otpRowId = otpRow.id;
 
     const { data: roleRow, error: roleError } = await db
       .from('roles')
@@ -234,6 +239,7 @@ async function register(req, res, next) {
     if (roleError || !roleRow) throw createHttpError(400, 'Profil demandé non reconnu.');
     const hashedPassword = await bcrypt.hash(motDePasse, 10);
 
+    // ── INSERT utilisateur (point de non-retour) ──────────────────────
     const { data, error } = await db
       .from('utilisateurs')
       .insert({
@@ -252,42 +258,60 @@ async function register(req, res, next) {
       if (error.code === '23505') throw createHttpError(409, 'Ce numéro de téléphone est déjà enregistré');
       throw error;
     }
+    createdUserId = data.id;
 
-    const token = generateToken();
-    const { sessionError, expireDate } = await insertSession(db, data.id, token, req);
-    if (sessionError) {
-      await db.from('utilisateurs').delete().eq('id', data.id);
-      throw sessionError;
+    // ── Tout ce qui suit est dans un sous-try : si quoi que ce soit
+    //    échoue, on ROLLBACK l'utilisateur (et on remet l'OTP pending)
+    //    AVANT de propager l'erreur. → atomicité stricte. ─────────────
+    let token;
+    let expireDate;
+    try {
+      const sessionResult = await insertSession(db, data.id, generateToken(), req);
+      if (sessionResult.sessionError) throw sessionResult.sessionError;
+      token = sessionResult.token;
+      expireDate = sessionResult.expireDate;
+
+      await deleteOtpRow(db, otpRow.id);
+
+      const { data: roleNomRow } = await db.from('roles').select('nom').eq('id', data.role_id).maybeSingle();
+      const roleNom = roleNomRow?.nom ?? role;
+
+      if (!data.est_approuve && (roleNom === 'restaurateur' || roleNom === 'commercant')) {
+        const { notifyAllAdmins } = require('../services/admin-notify.service');
+        await notifyAllAdmins(db, {
+          type: 'compte_marchand_en_attente',
+          titre: 'Nouveau compte marchand',
+          corps: `« ${nomClean} » (${roleNom}) attend la validation de son compte.`,
+          data: { utilisateur_id: data.id, role: roleNom, action: 'review_accounts' },
+        }).catch(() => undefined);
+      }
+
+      return res.status(201).json({
+        token,
+        expireLe: expireDate.toISOString(),
+        user: {
+          id: data.id,
+          nom: data.nom,
+          telephone: data.telephone,
+          imageUrl: userImageUrl(data),
+          roleId: data.role_id,
+          role: roleNomRow?.nom ?? null,
+          est_approuve: data.est_approuve,
+        },
+      });
+    } catch (postInsertError) {
+      // ROLLBACK : suppression utilisateur + restauration OTP (best-effort).
+      // On log sévèrement si le rollback lui-même échoue.
+      if (createdUserId) {
+        await db.from('utilisateurs').delete().eq('id', createdUserId).catch((delErr) => {
+          console.error('[register] ROLLBACK utilisateur impossible:', createdUserId, delErr.message);
+        });
+      }
+      if (otpRowId) {
+        await db.from('otp_verifications').update({ utilise_at: null }).eq('id', otpRowId).catch(() => undefined);
+      }
+      throw postInsertError;
     }
-
-    await deleteOtpRow(db, otpRow.id);
-
-    const { data: roleNomRow } = await db.from('roles').select('nom').eq('id', data.role_id).maybeSingle();
-    const roleNom = roleNomRow?.nom ?? role;
-
-    if (!data.est_approuve && (roleNom === 'restaurateur' || roleNom === 'commercant')) {
-      const { notifyAllAdmins } = require('../services/admin-notify.service');
-      await notifyAllAdmins(db, {
-        type: 'compte_marchand_en_attente',
-        titre: 'Nouveau compte marchand',
-        corps: `« ${nomClean} » (${roleNom}) attend la validation de son compte.`,
-        data: { utilisateur_id: data.id, role: roleNom, action: 'review_accounts' },
-      }).catch(() => undefined);
-    }
-
-    return res.status(201).json({
-      token,
-      expireLe: expireDate.toISOString(),
-      user: {
-        id: data.id,
-        nom: data.nom,
-        telephone: data.telephone,
-        imageUrl: userImageUrl(data),
-        roleId: data.role_id,
-        role: roleNomRow?.nom ?? null,
-        est_approuve: data.est_approuve,
-      },
-    });
   } catch (error) {
     return next(error);
   }
