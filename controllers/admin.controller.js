@@ -1005,11 +1005,20 @@ async function mapAdminDeliveryRow(db, liv) {
 
 async function listAdminDeliveries(req, res, next) {
   try {
-    const { status, type: typeFilter } = req.query;
+    const { status, type: typeFilter, since, until } = req.query;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const db = getDb();
-    let query = db.from('livraisons').select('*').order('created_at', { ascending: false });
+
+    let query = db
+      .from('livraisons')
+      .select('id, type_livraison, sous_commande_id, statut, livreur_id, restaurant_id, boutique_id, adresse_livraison_snapshot, adresse_collecte_snapshot, client_nom, client_telephone, montant_total, attribuee_at, collectee_at, livree_at, created_at, updated_at', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
     if (status) query = query.eq('statut', status);
-    const { data: livraisons, error } = await query;
+    if (since) query = query.gte('created_at', String(since));
+    if (until) query = query.lte('created_at', String(until));
+    const { data: livraisons, error, count } = await query;
     if (error) throw error;
 
     let rows = livraisons || [];
@@ -1019,17 +1028,194 @@ async function listAdminDeliveries(req, res, next) {
       rows = rows.filter((l) => l.type_livraison !== 'externe' && l.sous_commande_id);
     }
 
-    const out = [];
-    for (const liv of rows) {
-      out.push(await mapAdminDeliveryRow(db, liv));
-    }
+    const out = await mapAdminDeliveriesBulk(db, rows);
 
-    void notifyDeliveryDelaysForList(db, livraisons || []).catch(() => undefined);
+    // Notification des retards : on n'utilise que les statuts actifs et on garde
+    // le fire-and-forget pour ne pas bloquer la réponse.
+    const activeForDelay = (livraisons || []).filter(
+      (l) => l.statut !== 'livree' && l.statut !== 'annulee',
+    );
+    void notifyDeliveryDelaysForList(db, activeForDelay).catch(() => undefined);
 
-    return res.json(out);
+    return res.json({
+      items: out,
+      total: count ?? rows.length,
+      limit,
+      offset,
+    });
   } catch (error) {
     return next(error);
   }
+}
+
+/**
+ * Variante optimisée du mapping pour les listes : au lieu de N+1 requêtes
+ * (1 par livraison × 6-7 lookups), on fait 1 requête par table liée en
+ * bulk et on joint en mémoire. Sur 100 livraisons on passe de ~700 requêtes
+ * à 6-7.
+ */
+async function mapAdminDeliveriesBulk(db, livraisons) {
+  if (!livraisons || livraisons.length === 0) return [];
+
+  const sousCommandeIds = [
+    ...new Set(livraisons.filter((l) => l.sous_commande_id).map((l) => l.sous_commande_id)),
+  ];
+  const livreurIds = [
+    ...new Set(livraisons.filter((l) => l.livreur_id).map((l) => l.livreur_id)),
+  ];
+  const restaurantIds = [
+    ...new Set(livraisons.filter((l) => l.restaurant_id).map((l) => l.restaurant_id)),
+  ];
+  const boutiqueIds = [
+    ...new Set(livraisons.filter((l) => l.boutique_id).map((l) => l.boutique_id)),
+  ];
+
+  const [
+    sousCommandesRes,
+    livreursRes,
+    restaurantsRes,
+    boutiquesRes,
+  ] = await Promise.all([
+    sousCommandeIds.length
+      ? db.from('sous_commandes').select('id, commande_id').in('id', sousCommandeIds)
+      : { data: [] },
+    livreurIds.length
+      ? db
+          .from('livreurs')
+          .select('id, utilisateur_id, type_vehicule, entreprise_logistique_id, plaque_immatriculation')
+          .in('id', livreurIds)
+      : { data: [] },
+    restaurantIds.length
+      ? db.from('restaurants').select('id, nom, statut').in('id', restaurantIds)
+      : { data: [] },
+    boutiqueIds.length
+      ? db.from('boutiques').select('id, nom').in('id', boutiqueIds)
+      : { data: [] },
+  ]);
+
+  const sousCommandeMap = new Map((sousCommandesRes.data || []).map((sc) => [sc.id, sc]));
+  const livreurMap = new Map((livreursRes.data || []).map((l) => [l.id, l]));
+
+  const commandeIds = [
+    ...new Set(
+      (sousCommandesRes.data || [])
+        .filter((sc) => sc.commande_id)
+        .map((sc) => sc.commande_id),
+    ),
+  ];
+  const userIds = [
+    ...new Set(
+      (livreursRes.data || [])
+        .filter((l) => l.utilisateur_id)
+        .map((l) => l.utilisateur_id),
+    ),
+  ];
+  const entrepriseIds = [
+    ...new Set(
+      (livreursRes.data || [])
+        .filter((l) => l.entreprise_logistique_id)
+        .map((l) => l.entreprise_logistique_id),
+    ),
+  ];
+
+  const [commandesRes, usersRes, entreprisesRes] = await Promise.all([
+    commandeIds.length
+      ? db
+          .from('commandes')
+          .select('id, numero, statut, created_at, client_id')
+          .in('id', commandeIds)
+      : { data: [] },
+    userIds.length
+      ? db.from('utilisateurs').select('id, nom, telephone').in('id', userIds)
+      : { data: [] },
+    entrepriseIds.length
+      ? db.from('entreprises_logistiques').select('id, nom, telephone').in('id', entrepriseIds)
+      : { data: [] },
+  ]);
+
+  const commandeMap = new Map((commandesRes.data || []).map((c) => [c.id, c]));
+  const userMap = new Map((usersRes.data || []).map((u) => [u.id, u]));
+  const entrepriseMap = new Map((entreprisesRes.data || []).map((e) => [e.id, e]));
+  const restaurantMap = new Map((restaurantsRes.data || []).map((r) => [r.id, r]));
+  const boutiqueMap = new Map((boutiquesRes.data || []).map((b) => [b.id, b]));
+
+  return livraisons.map((liv) => {
+    const isExterne = liv.type_livraison === 'externe' || !liv.sous_commande_id;
+
+    let commande = null;
+    let sousCommande = null;
+    if (!isExterne && liv.sous_commande_id) {
+      sousCommande = sousCommandeMap.get(liv.sous_commande_id) || null;
+      if (sousCommande?.commande_id) {
+        commande = commandeMap.get(sousCommande.commande_id) || null;
+      }
+    }
+
+    let livreur = null;
+    let entrepriseLogistique = null;
+    if (liv.livreur_id) {
+      const l = livreurMap.get(liv.livreur_id);
+      if (l) {
+        const u = l.utilisateur_id ? userMap.get(l.utilisateur_id) : null;
+        livreur = {
+          id: l.id,
+          nom: u?.nom,
+          telephone: u?.telephone,
+          type_vehicule: l.type_vehicule,
+          plaque_immatriculation: l.plaque_immatriculation,
+        };
+        if (l.entreprise_logistique_id) {
+          entrepriseLogistique = entrepriseMap.get(l.entreprise_logistique_id) || null;
+        }
+      }
+    }
+
+    let commerce = null;
+    if (liv.restaurant_id && restaurantMap.has(liv.restaurant_id)) {
+      const r = restaurantMap.get(liv.restaurant_id);
+      commerce = { id: r.id, nom: r.nom, type: 'restaurant' };
+    } else if (liv.boutique_id && boutiqueMap.has(liv.boutique_id)) {
+      const b = boutiqueMap.get(liv.boutique_id);
+      commerce = { id: b.id, nom: b.nom, type: 'boutique' };
+    }
+
+    const adresse = addressFromDeliverySnapshot(liv.adresse_livraison_snapshot);
+    const adresseRetrait = addressFromDeliverySnapshot(liv.adresse_collecte_snapshot);
+    const delay = classifyDeliveryDelay(liv);
+
+    return {
+      id: liv.id,
+      type_livraison: isExterne ? 'externe' : 'commande',
+      statut: liv.statut,
+      created_at: liv.created_at,
+      created_at_label: formatDateTimeFr(liv.created_at),
+      attribuee_at: liv.attribuee_at,
+      attribuee_at_label: formatDateTimeFr(liv.attribuee_at),
+      collectee_at: liv.collectee_at,
+      collectee_at_label: formatDateTimeFr(liv.collectee_at),
+      livree_at: liv.livree_at,
+      livree_at_label: formatDateTimeFr(liv.livree_at),
+      commande_created_at: commande?.created_at ?? null,
+      commande_created_at_label: formatDateTimeFr(commande?.created_at),
+      timeline: mapLivraisonTimeline(liv),
+      adresse,
+      adresse_retrait: adresseRetrait,
+      commande,
+      sous_commande: sousCommande,
+      sous_commande_id: liv.sous_commande_id,
+      commerce,
+      commerce_nom: commerce?.nom ?? null,
+      client_nom: liv.client_nom ?? null,
+      client_telephone: liv.client_telephone ?? null,
+      montant_total: liv.montant_total != null ? Number(liv.montant_total) : null,
+      note: liv.note ?? null,
+      livreur,
+      entreprise_logistique: entrepriseLogistique,
+      en_retard: delay.en_retard,
+      type_retard: delay.type_retard,
+      minutes_retard: delay.minutes_retard,
+    };
+  });
 }
 
 async function getAdminDeliveryDetail(req, res, next) {
