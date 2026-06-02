@@ -24,8 +24,15 @@ const promoRoutes = require('./routes/promo.routes');
 const observabilityRoutes = require('./routes/observability.routes');
 const observabilityAdminRoutes = require('./routes/observability-admin.routes');
 const usageAdminRoutes = require('./routes/usage-admin.routes');
+const pawapayWebhookRoutes = require('./routes/pawapay-webhook.routes');
+const paymentRoutes = require('./payments/routes/payment.routes');
+const payoutRoutes = require('./payments/routes/payout.routes');
+const adminPayoutRoutes = require('./payments/routes/admin-payout.routes');
+const paymentsPawapayWebhookRoutes = require('./payments/routes/pawapay-webhook.routes');
 const { requestContextMiddleware } = require('./middlewares/request-context.middleware');
 const { getDb } = require('./config/db');
+const paymentsScheduler = require('./payments/jobs/scheduler');
+const pawapayService = require('./payments/services/pawapay.service');
 
 const app = express();
 
@@ -84,6 +91,14 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '512kb' }));
 app.use(requestContextMiddleware);
 
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'golivra-backend' });
+});
+
+app.use('/webhooks/pawapay', paymentsPawapayWebhookRoutes);
+// Conserve l'ancien routeur pour rétro-compat (certains clients envoient encore dessus)
+app.use('/webhooks/pawapay-legacy', pawapayWebhookRoutes);
+
 const isDev = process.env.NODE_ENV !== 'production';
 
 // ── Rate Limiting ──────────────────────────────────────────────────────
@@ -95,9 +110,8 @@ const generalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    // Toujours laisser passer le health check
     if (req.method === 'GET' && req.path === '/health') return true;
-    // En dev, tout passe (max=0 = illimité, mais on double la sécurité)
+    if (typeof req.path === 'string' && req.path.startsWith('/webhooks/')) return true;
     if (isDev) return true;
     return false;
   },
@@ -120,10 +134,6 @@ if (!isDev) {
   console.log('[golivra] Mode développement : rate limiting désactivé.');
 }
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'golivra-backend' });
-});
-
 app.use('/api/otp', otpLimiter, otpRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', orderRoutes);
@@ -144,6 +154,12 @@ app.use('/api/promo', promoRoutes);
 app.use('/api/observability', observabilityRoutes);
 app.use('/api/admin/observability', observabilityAdminRoutes);
 app.use('/api/admin/usage', usageAdminRoutes);
+
+// ── Module Paiements (escrow, ledger, payouts, webhooks) ────────────────────
+// Note : la route POST /api/orders/:orderId/pay reste dans order.routes.js
+// et délègue désormais au nouveau service via le wrapper payment.service.
+app.use('/api', payoutRoutes);
+app.use('/api/admin', adminPayoutRoutes);
 
 function httpErrorCode(status, err) {
   const raw = err.code;
@@ -295,6 +311,8 @@ async function startServer() {
   await ensureBaseCategories();
   const observabilityScheduler = require('./services/observability-scheduler.service');
   observabilityScheduler.start();
+  pawapayService.logConfig();
+  paymentsScheduler.start();
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     const env = process.env.NODE_ENV || 'development';

@@ -1,188 +1,136 @@
+/**
+ * Service legacy — Portefeuille (wallet)
+ * ───────────────────────────────────────────────────────────────────────────
+ * Ce module conserve les noms de fonctions utilisés historiquement par
+ * l'écosystème GoLivra (wallet.controller, order.controller, dispatch.service…)
+ * mais délègue toute la logique au nouveau module `payments/`.
+ *
+ * Toute nouvelle fonctionnalité doit être codée dans `payments/`. Ce wrapper
+ * reste pour rétro-compatibilité.
+ */
+
 const { createHttpError } = require('../utils/http');
-const { getPricingConfig, splitByPercent, splitDeliveryFee } = require('./pricing.service');
-
-let cachedGolivraUserId = null;
-
-async function resolveGolivraPlatformUserId(db) {
-  if (process.env.GOLIVRA_PLATFORM_USER_ID) {
-    return process.env.GOLIVRA_PLATFORM_USER_ID;
-  }
-  if (cachedGolivraUserId) return cachedGolivraUserId;
-
-  const email = String(process.env.GOLIVRA_PLATFORM_EMAIL || 'golivra@gmail.com').trim();
-  const { data: byEmail } = await db
-    .from('utilisateurs')
-    .select('id')
-    .ilike('email', email)
-    .maybeSingle();
-  if (byEmail?.id) {
-    cachedGolivraUserId = byEmail.id;
-    return byEmail.id;
-  }
-
-  const { data: role } = await db.from('roles').select('id').eq('nom', 'admin').maybeSingle();
-  if (role?.id) {
-    const { data: admin } = await db
-      .from('utilisateurs')
-      .select('id')
-      .eq('role_id', role.id)
-      .eq('est_actif', true)
-      .limit(1)
-      .maybeSingle();
-    if (admin?.id) {
-      cachedGolivraUserId = admin.id;
-      return admin.id;
-    }
-  }
-
-  throw createHttpError(500, 'Compte portefeuille GoLivra introuvable (admin ou GOLIVRA_PLATFORM_USER_ID).');
-}
+const { info: logInfo } = require('../utils/logger');
+const walletService = require('../payments/services/wallet.service');
+const escrowService = require('../payments/services/escrow.service');
+const ledgerService = require('../payments/services/ledger.service');
+const paymentRepo = require('../payments/repositories/payment.repository');
+const withdrawalService = require('../payments/services/withdrawal.service');
+const withdrawalRepo = require('../payments/repositories/withdrawal.repository');
 
 async function getOrCreatePortefeuille(db, utilisateurId) {
-  const { data: existing, error: exErr } = await db
-    .from('portefeuilles')
-    .select('*')
-    .eq('utilisateur_id', utilisateurId)
-    .maybeSingle();
-  if (exErr) throw exErr;
-  if (existing) return existing;
+  const w = await walletService.getOrCreate(db, utilisateurId);
+  return {
+    id: w.id,
+    utilisateur_id: w.utilisateurId,
+    solde: w.soldeFcfa,
+    solde_en_attente: w.soldeEnAttenteFcfa,
+    devise: w.devise,
+    est_actif: w.estActif,
+    created_at: w.creeLe,
+    updated_at: w.misAJourLe,
+  };
+}
 
-  const { data: created, error: insErr } = await db
-    .from('portefeuilles')
-    .insert({ utilisateur_id: utilisateurId })
-    .select('*')
-    .single();
-  if (insErr) throw insErr;
-  return created;
+async function resolveGolivraPlatformUserId(db) {
+  return escrowService.resolveGolivraPlatformUserId(db);
 }
 
 async function hasWalletTransaction(db, { portefeuilleId, type, referenceType, referenceId }) {
-  const { data } = await db
-    .from('transactions_portefeuille')
-    .select('id')
-    .eq('portefeuille_id', portefeuilleId)
-    .eq('type', type)
-    .eq('reference_type', referenceType)
-    .eq('reference_id', referenceId)
-    .maybeSingle();
-  return Boolean(data?.id);
+  const txRepo = require('../payments/repositories/transaction.repository');
+  return txRepo.existsFor(db, { portefeuilleId, type, referenceType, referenceId });
 }
 
-async function creditWallet(
-  db,
-  utilisateurId,
-  montant,
-  { type = 'credit', referenceType, referenceId, description } = {},
-) {
-  const amount = Number(montant);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-
-  const portefeuille = await getOrCreatePortefeuille(db, utilisateurId);
-  if (referenceType && referenceId) {
-    const exists = await hasWalletTransaction(db, {
-      portefeuilleId: portefeuille.id,
-      type,
-      referenceType,
-      referenceId,
-    });
-    if (exists) return portefeuille;
+async function creditWallet(db, utilisateurId, montant, opts = {}) {
+  const r = await walletService.credit(db, utilisateurId, montant, opts);
+  if (!r) return null;
+  if (r.idempotent) {
+    return getOrCreatePortefeuille(db, utilisateurId);
   }
-
-  const soldeAvant = Number(portefeuille.solde ?? 0);
-  const soldeApres = soldeAvant + amount;
-  const now = new Date().toISOString();
-
-  const { error: txErr } = await db.from('transactions_portefeuille').insert({
-    portefeuille_id: portefeuille.id,
-    type,
-    montant: amount,
-    solde_avant: soldeAvant,
-    solde_apres: soldeApres,
-    reference_type: referenceType || null,
-    reference_id: referenceId || null,
-    description: description || null,
-    created_at: now,
-  });
-  if (txErr) throw txErr;
-
-  const { data: updated, error: upErr } = await db
-    .from('portefeuilles')
-    .update({ solde: soldeApres, updated_at: now })
-    .eq('id', portefeuille.id)
-    .select('*')
-    .single();
-  if (upErr) throw upErr;
-  return updated;
+  return {
+    id: r.wallet.id,
+    utilisateur_id: r.wallet.utilisateurId,
+    solde: r.wallet.soldeFcfa,
+    solde_en_attente: r.wallet.soldeEnAttenteFcfa,
+    devise: r.wallet.devise,
+    est_actif: r.wallet.estActif,
+    created_at: r.wallet.creeLe,
+    updated_at: r.wallet.misAJourLe,
+  };
 }
 
-async function getEstablishmentOwnerId(db, sc) {
-  if (sc.restaurant_id) {
-    const { data } = await db
-      .from('restaurants')
-      .select('proprietaire_id')
-      .eq('id', sc.restaurant_id)
-      .maybeSingle();
-    return data?.proprietaire_id || null;
-  }
-  if (sc.boutique_id) {
-    const { data } = await db
-      .from('boutiques')
-      .select('proprietaire_id')
-      .eq('id', sc.boutique_id)
-      .maybeSingle();
-    return data?.proprietaire_id || null;
-  }
-  return null;
-}
-
-async function markCommandeEscrowCredited(db, commandeId) {
-  const now = new Date().toISOString();
-  const { error } = await db
-    .from('commandes')
-    .update({ escrow_credite_at: now, updated_at: now })
-    .eq('id', commandeId);
-  if (error && !String(error.message || '').includes('escrow_credite_at')) {
-    throw error;
-  }
+async function debitWallet(db, utilisateurId, montant, opts = {}) {
+  const r = await walletService.debit(db, utilisateurId, montant, opts);
+  return {
+    id: r.wallet.id,
+    utilisateur_id: r.wallet.utilisateurId,
+    solde: r.wallet.soldeFcfa,
+    solde_en_attente: r.wallet.soldeEnAttenteFcfa,
+    devise: r.wallet.devise,
+    est_actif: r.wallet.estActif,
+    created_at: r.wallet.creeLe,
+    updated_at: r.wallet.misAJourLe,
+  };
 }
 
 /**
- * Paiement validé → fonds sur le portefeuille escrow GoLivra (pas de versement marchand avant livraison).
+ * Wrapper legacy : holdOrderPaymentInEscrow(commandeId, paiementId)
+ * Délègue au nouveau escrow.service.hold() qui crée une vraie ligne `escrows`.
  */
 async function holdOrderPaymentInEscrow(db, commandeId, paiementId) {
-  const { data: commande, error } = await db
-    .from('commandes')
-    .select('id, total, escrow_credite_at')
-    .eq('id', commandeId)
-    .maybeSingle();
-  if (error) throw error;
-  if (!commande) throw createHttpError(404, 'Commande introuvable.');
-
-  if (commande.escrow_credite_at) {
-    return { commande_id: commandeId, paiement_id: paiementId, deja_credite: true };
-  }
-
-  const total = Number(commande.total ?? 0);
-  if (total <= 0) {
-    await markCommandeEscrowCredited(db, commandeId);
-    return { commande_id: commandeId, paiement_id: paiementId, montant_fcfa: 0 };
-  }
-
-  const golivraUserId = await resolveGolivraPlatformUserId(db);
-  await creditWallet(db, golivraUserId, total, {
-    type: 'credit',
-    referenceType: 'escrow_commande',
-    referenceId: commandeId,
-    description: `Escrow — paiement commande ${commandeId}`,
-  });
-  await markCommandeEscrowCredited(db, commandeId);
-
-  return { commande_id: commandeId, paiement_id: paiementId, montant_fcfa: total, escrow: true };
+  const r = await escrowService.hold(db, commandeId, paiementId);
+  return {
+    commande_id: commandeId,
+    paiement_id: paiementId,
+    deja_credite: Boolean(r.dejaBloque),
+    montant_fcfa: r.totalBloqueFcfa || 0,
+    escrow: !r.dejaBloque,
+    escrows: r.escrows || [],
+  };
 }
 
-/** @deprecated — conservé pour compatibilité d’import ; utilise l’escrow. */
 async function creditVendorsOnOrderPaid(db, commandeId, paiementId) {
   return holdOrderPaymentInEscrow(db, commandeId, paiementId);
+}
+
+/**
+ * Wrapper legacy : settleSousCommandePayout → libère l'escrow de la sous-commande.
+ */
+async function settleSousCommandePayout(db, sousCommandeId, livraison = null) {
+  // Trouve l'escrow correspondant
+  const escrowRepo = require('../payments/repositories/escrow.repository');
+  const escrows = await escrowRepo.findByCommande(db, (await getCommandeIdFromSc(db, sousCommandeId)));
+  let escrow = escrows.find((e) => e.metadata?.sousCommandeId === sousCommandeId);
+  if (!escrow) {
+    return { skipped: true, reason: 'escrow_introuvable', sous_commande_id: sousCommandeId };
+  }
+  if (escrow.statut === 'libere') {
+    return { skipped: true, reason: 'deja_reglee', sous_commande_id: sousCommandeId };
+  }
+  const r = await escrowService.release(db, escrow.id, { livraison });
+  return {
+    sous_commande_id: sousCommandeId,
+    produit_fcfa: r.produitNet,
+    livreur_fcfa: r.fraisNet,
+    golivra_fcfa: r.commissionLivraison,
+    escrow: true,
+  };
+}
+
+async function getCommandeIdFromSc(db, sousCommandeId) {
+  const { data } = await db
+    .from('sous_commandes')
+    .select('commande_id')
+    .eq('id', sousCommandeId)
+    .maybeSingle();
+  return data?.commande_id;
+}
+
+async function settleDeliveryFeesOnComplete(db, livraison) {
+  if (!livraison?.sous_commande_id) {
+    return { skipped: true, reason: 'sans_sous_commande' };
+  }
+  return settleSousCommandePayout(db, livraison.sous_commande_id, livraison);
 }
 
 async function resolveDeliveryCommissionPercent(db, entrepriseLogistiqueId) {
@@ -195,8 +143,19 @@ async function resolveDeliveryCommissionPercent(db, entrepriseLogistiqueId) {
     const pct = Number(data?.commission_pct);
     if (Number.isFinite(pct) && pct >= 0 && pct <= 100) return pct;
   }
+  const { getPricingConfig } = require('./pricing.service');
   const config = await getPricingConfig(db);
   return Number(config.delivery_platform_percent);
+}
+
+async function resolveLogisticsGestionnaireId(db, entrepriseLogistiqueId) {
+  if (!entrepriseLogistiqueId) return null;
+  const { data } = await db
+    .from('entreprises_logistiques')
+    .select('gestionnaire_id')
+    .eq('id', entrepriseLogistiqueId)
+    .maybeSingle();
+  return data?.gestionnaire_id || null;
 }
 
 async function resolveDriverUserId(db, livraison) {
@@ -220,420 +179,35 @@ async function markSousCommandeReglee(db, sousCommandeId) {
   }
 }
 
-/**
- * Livraison terminée (ou sous-commande « livrée ») → répartition unique :
- * commerce = produit ; livreur = livraison − commission GoLivra ; GoLivra = % livraison (contrat entreprise).
- */
-async function settleSousCommandePayout(db, sousCommandeId, livraison = null) {
-  const { data: sc, error: scErr } = await db
-    .from('sous_commandes')
-    .select('*')
-    .eq('id', sousCommandeId)
-    .maybeSingle();
-  if (scErr) throw scErr;
-  if (!sc) return { skipped: true, reason: 'sous_commande_absente' };
-
-  if (sc.reglee_at) {
-    return { skipped: true, reason: 'deja_reglee', sous_commande_id: sousCommandeId };
-  }
-
-  const golivraUserId = await resolveGolivraPlatformUserId(db);
-  const golivraPf = await getOrCreatePortefeuille(db, golivraUserId);
-  const existsSettlement = await hasWalletTransaction(db, {
-    portefeuilleId: golivraPf.id,
-    type: 'debit',
-    referenceType: 'escrow_sous_commande',
-    referenceId: sousCommandeId,
-  });
-  if (existsSettlement) {
-    return { skipped: true, reason: 'deja_reglee', sous_commande_id: sousCommandeId };
-  }
-  const merchantRef = `${sousCommandeId}:merchant`;
-  const ownerId = await getEstablishmentOwnerId(db, sc);
-  const produit = Number(sc.sous_total ?? 0);
-  const frais = Number(sc.frais_livraison ?? 0);
-  const entrepriseId = livraison?.entreprise_logistique_id || null;
-  const commissionPct = await resolveDeliveryCommissionPercent(db, entrepriseId);
-  const commissionGolivra = frais > 0 ? Math.round((frais * commissionPct) / 100) : 0;
-  const livreurPart = Math.max(0, frais - commissionGolivra);
-
-  const { data: commande } = await db
+async function markCommandeEscrowCredited(db, commandeId) {
+  const now = new Date().toISOString();
+  const { error } = await db
     .from('commandes')
-    .select('escrow_credite_at')
-    .eq('id', sc.commande_id)
-    .maybeSingle();
-  const escrowHeld = Boolean(commande?.escrow_credite_at);
-
-  const escrowDebit = escrowHeld ? produit + livreurPart : 0;
-  if (escrowHeld && escrowDebit > 0 && !existsSettlement) {
-    await debitWallet(db, golivraUserId, escrowDebit, {
-      type: 'debit',
-      referenceType: 'escrow_sous_commande',
-      referenceId: sousCommandeId,
-      description: `Sortie escrow — sous-commande ${sc.numero || sousCommandeId}`,
-    });
+    .update({ escrow_credite_at: now, updated_at: now })
+    .eq('id', commandeId);
+  if (error && !String(error.message || '').includes('escrow_credite_at')) {
+    throw error;
   }
-
-  if (ownerId && produit > 0) {
-    const alreadyMerchant = await hasWalletTransaction(db, {
-      portefeuilleId: (await getOrCreatePortefeuille(db, ownerId)).id,
-      type: 'credit',
-      referenceType: 'sous_commande',
-      referenceId: sc.id,
-    });
-    const alreadyMerchantV2 = await hasWalletTransaction(db, {
-      portefeuilleId: (await getOrCreatePortefeuille(db, ownerId)).id,
-      type: 'credit',
-      referenceType: 'vente_sous_commande',
-      referenceId: merchantRef,
-    });
-    if (!alreadyMerchant && !alreadyMerchantV2) {
-      await creditWallet(db, ownerId, produit, {
-        type: 'credit',
-        referenceType: 'vente_sous_commande',
-        referenceId: merchantRef,
-        description: `Vente livrée — ${sc.numero || sousCommandeId}`,
-      });
-    }
-  }
-
-  const driverUserId = await resolveDriverUserId(db, livraison);
-  if (livreurPart > 0) {
-    const driverRef = `${sousCommandeId}:driver`;
-    if (driverUserId) {
-      await creditWallet(db, driverUserId, livreurPart, {
-        type: 'gain_livraison',
-        referenceType: 'livraison_sous_commande',
-        referenceId: driverRef,
-        description: `Livraison — ${livreurPart} FCFA (commission plateforme ${commissionPct} %)`,
-      });
-    } else if (entrepriseId) {
-      const gestionnaireId = await resolveLogisticsGestionnaireId(db, entrepriseId);
-      if (gestionnaireId) {
-        await creditWallet(db, gestionnaireId, livreurPart, {
-          type: 'commission_logistique',
-          referenceType: 'sous_commande',
-          referenceId: driverRef,
-          description: `Livraison entreprise — ${livreurPart} FCFA`,
-        });
-      }
-    }
-  }
-
-  // La commission reste sur le portefeuille GoLivra (escrow entrant − sorties marchand/livreur).
-
-  await markSousCommandeReglee(db, sousCommandeId);
-
-  return {
-    sous_commande_id: sousCommandeId,
-    produit_fcfa: produit,
-    livreur_fcfa: livreurPart,
-    golivra_fcfa: commissionGolivra,
-    commission_pct: commissionPct,
-    escrow: escrowHeld,
-  };
 }
 
-async function debitWallet(
-  db,
-  utilisateurId,
-  montant,
-  { type = 'debit', referenceType, referenceId, description } = {},
-) {
-  const amount = Number(montant);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw createHttpError(400, 'Montant de débit invalide.');
+async function getEstablishmentOwnerId(db, sc) {
+  if (sc.restaurant_id) {
+    const { data } = await db
+      .from('restaurants')
+      .select('proprietaire_id')
+      .eq('id', sc.restaurant_id)
+      .maybeSingle();
+    return data?.proprietaire_id || null;
   }
-
-  const portefeuille = await getOrCreatePortefeuille(db, utilisateurId);
-  if (referenceType && referenceId) {
-    const exists = await hasWalletTransaction(db, {
-      portefeuilleId: portefeuille.id,
-      type,
-      referenceType,
-      referenceId,
-    });
-    if (exists) return portefeuille;
+  if (sc.boutique_id) {
+    const { data } = await db
+      .from('boutiques')
+      .select('proprietaire_id')
+      .eq('id', sc.boutique_id)
+      .maybeSingle();
+    return data?.proprietaire_id || null;
   }
-
-  const soldeAvant = Number(portefeuille.solde ?? 0);
-  if (soldeAvant < amount) {
-    throw createHttpError(400, 'Solde insuffisant.');
-  }
-
-  const soldeApres = soldeAvant - amount;
-  const now = new Date().toISOString();
-
-  const { error: txErr } = await db.from('transactions_portefeuille').insert({
-    portefeuille_id: portefeuille.id,
-    type,
-    montant: amount,
-    solde_avant: soldeAvant,
-    solde_apres: soldeApres,
-    reference_type: referenceType || null,
-    reference_id: referenceId || null,
-    description: description || null,
-    created_at: now,
-  });
-  if (txErr) throw txErr;
-
-  const { data: updated, error: upErr } = await db
-    .from('portefeuilles')
-    .update({ solde: soldeApres, updated_at: now })
-    .eq('id', portefeuille.id)
-    .select('*')
-    .single();
-  if (upErr) throw upErr;
-  return updated;
-}
-
-async function listTransactionsForUser(db, utilisateurId, { limit = 40 } = {}) {
-  const pf = await getOrCreatePortefeuille(db, utilisateurId);
-  const { data, error } = await db
-    .from('transactions_portefeuille')
-    .select('*')
-    .eq('portefeuille_id', pf.id)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return (data || []).map((t) => ({
-    id: t.id,
-    type: t.type,
-    montant: Number(t.montant),
-    solde_apres: Number(t.solde_apres),
-    description: t.description,
-    reference_type: t.reference_type,
-    reference_id: t.reference_id,
-    created_at: t.created_at,
-  }));
-}
-
-async function getWalletDashboard(db, utilisateurId) {
-  const pf = await getOrCreatePortefeuille(db, utilisateurId);
-  const transactions = await listTransactionsForUser(db, utilisateurId, { limit: 25 });
-
-  const { data: retraits } = await db
-    .from('demandes_retrait')
-    .select('id, montant, statut, methode, numero_compte, created_at, traite_at')
-    .eq('utilisateur_id', utilisateurId)
-    .order('created_at', { ascending: false })
-    .limit(15);
-
-  return {
-    portefeuille_id: pf.id,
-    solde_fcfa: Number(pf.solde ?? 0),
-    solde_en_attente_fcfa: Number(pf.solde_en_attente ?? 0),
-    devise: pf.devise || 'XAF',
-    transactions,
-    retraits: retraits || [],
-  };
-}
-
-const MIN_RETRAIT_FCFA = Number(process.env.MIN_RETRAIT_FCFA) || 5000;
-
-const AUTO_WITHDRAW_ROLES = new Set([
-  'restaurateur',
-  'commercant',
-  'gestionnaire_logistique',
-  'livreur',
-]);
-
-async function createWithdrawalRequest(db, utilisateurId, payload, { role } = {}) {
-  const montant = Number(payload.montant);
-  const methode = String(payload.methode || 'airtel_money').trim();
-  const numeroCompte = String(payload.numero_compte || payload.numeroCompte || '').trim();
-  const note = payload.note ? String(payload.note).trim() : null;
-  const roleName = role ? String(role).trim() : null;
-  const isPlatformAdmin = roleName === 'admin';
-  const autoApprove = roleName ? AUTO_WITHDRAW_ROLES.has(roleName) : false;
-  const minMontant = isPlatformAdmin ? 1 : MIN_RETRAIT_FCFA;
-
-  if (!Number.isFinite(montant) || montant < minMontant) {
-    throw createHttpError(
-      400,
-      isPlatformAdmin
-        ? 'Montant de retrait invalide.'
-        : `Montant minimum de retrait : ${MIN_RETRAIT_FCFA} FCFA.`,
-    );
-  }
-  if (!numeroCompte || numeroCompte.length < 8) {
-    throw createHttpError(400, 'Numéro Mobile Money invalide.');
-  }
-
-  const pf = await getOrCreatePortefeuille(db, utilisateurId);
-  if (Number(pf.solde ?? 0) < montant) {
-    throw createHttpError(400, 'Solde insuffisant.');
-  }
-
-  if (!autoApprove && !isPlatformAdmin) {
-    const { data: pending } = await db
-      .from('demandes_retrait')
-      .select('id')
-      .eq('utilisateur_id', utilisateurId)
-      .eq('statut', 'en_attente');
-    if ((pending || []).length > 0) {
-      throw createHttpError(409, 'Vous avez déjà une demande de retrait en attente.');
-    }
-  }
-
-  const now = new Date().toISOString();
-  const { data: created, error } = await db
-    .from('demandes_retrait')
-    .insert({
-      portefeuille_id: pf.id,
-      utilisateur_id: utilisateurId,
-      montant,
-      methode,
-      numero_compte: numeroCompte,
-      note_demandeur: note,
-      statut: autoApprove || isPlatformAdmin ? 'paye' : 'en_attente',
-      traite_at: autoApprove || isPlatformAdmin ? now : null,
-      note_admin: autoApprove || isPlatformAdmin ? 'Retrait traité automatiquement' : null,
-    })
-    .select('*')
-    .single();
-  if (error) throw error;
-
-  if (autoApprove || isPlatformAdmin) {
-    await debitWallet(db, utilisateurId, montant, {
-      type: 'debit',
-      referenceType: 'retrait',
-      referenceId: created.id,
-      description: `Retrait ${methode} → ${numeroCompte}`,
-    });
-  }
-
-  return created;
-}
-
-async function listWithdrawalsAdmin(db, { statut } = {}) {
-  let query = db
-    .from('demandes_retrait')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(100);
-  if (statut) query = query.eq('statut', statut);
-  const { data, error } = await query;
-  if (error) throw error;
-
-  const userIds = [...new Set((data || []).map((r) => r.utilisateur_id))];
-  const { data: users } = userIds.length
-    ? await db.from('utilisateurs').select('id, nom, telephone, email').in('id', userIds)
-    : { data: [] };
-  const userMap = new Map((users || []).map((u) => [u.id, u]));
-
-  return (data || []).map((r) => ({
-    ...r,
-    montant: Number(r.montant),
-    utilisateur: userMap.get(r.utilisateur_id) || null,
-  }));
-}
-
-async function processWithdrawalAdmin(db, retraitId, adminUserId, { action, note_admin: noteAdmin } = {}) {
-  const { data: demande, error } = await db
-    .from('demandes_retrait')
-    .select('*')
-    .eq('id', retraitId)
-    .maybeSingle();
-  if (error) throw error;
-  if (!demande) throw createHttpError(404, 'Demande introuvable.');
-  if (demande.statut !== 'en_attente') {
-    throw createHttpError(409, 'Cette demande a déjà été traitée.');
-  }
-
-  const now = new Date().toISOString();
-
-  if (action === 'rejeter' || action === 'reject') {
-    const { data, error: upErr } = await db
-      .from('demandes_retrait')
-      .update({
-        statut: 'rejete',
-        note_admin: noteAdmin || null,
-        traite_par: adminUserId,
-        traite_at: now,
-        updated_at: now,
-      })
-      .eq('id', retraitId)
-      .select('*')
-      .single();
-    if (upErr) throw upErr;
-    return data;
-  }
-
-  if (action === 'approuver' || action === 'approve' || action === 'payer' || action === 'pay') {
-    await debitWallet(db, demande.utilisateur_id, Number(demande.montant), {
-      type: 'debit',
-      referenceType: 'retrait',
-      referenceId: retraitId,
-      description: `Retrait ${demande.methode} → ${demande.numero_compte}`,
-    });
-
-    const { data, error: upErr } = await db
-      .from('demandes_retrait')
-      .update({
-        statut: 'paye',
-        note_admin: noteAdmin || 'Paiement effectué (simulation / manuel)',
-        traite_par: adminUserId,
-        traite_at: now,
-        updated_at: now,
-      })
-      .eq('id', retraitId)
-      .select('*')
-      .single();
-    if (upErr) throw upErr;
-    return data;
-  }
-
-  throw createHttpError(400, 'Action invalide (approuver, rejeter).');
-}
-
-async function getPlatformWalletAdmin(db) {
-  const golivraUserId = await resolveGolivraPlatformUserId(db);
-  const dashboard = await getWalletDashboard(db, golivraUserId);
-
-  const { data: txs } = await db
-    .from('transactions_portefeuille')
-    .select('montant, type, created_at')
-    .eq('portefeuille_id', dashboard.portefeuille_id);
-
-  let commissionsLivraison = 0;
-  let totalCredits = 0;
-  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-
-  for (const t of txs || []) {
-    const m = Number(t.montant);
-    if (t.type === 'commission_golivra') {
-      commissionsLivraison += m;
-      if (t.created_at >= monthStart) totalCredits += m;
-    }
-  }
-
-  const { data: pendingRetraits } = await db
-    .from('demandes_retrait')
-    .select('id, montant')
-    .eq('statut', 'en_attente');
-  const retraitsEnAttente = (pendingRetraits || []).reduce((a, r) => a + Number(r.montant), 0);
-
-  return {
-    ...dashboard,
-    role: 'plateforme_golivra',
-    commissions_livraison_total_fcfa: commissionsLivraison,
-    commissions_livraison_mois_fcfa: totalCredits,
-    retraits_en_attente_fcfa: retraitsEnAttente,
-    nb_retraits_en_attente: (pendingRetraits || []).length,
-    message:
-      'Revenus GoLivra = part plateforme sur les frais de livraison uniquement (pas de commission sur les ventes).',
-  };
-}
-
-async function resolveLogisticsGestionnaireId(db, entrepriseLogistiqueId) {
-  if (!entrepriseLogistiqueId) return null;
-  const { data } = await db
-    .from('entreprises_logistiques')
-    .select('gestionnaire_id')
-    .eq('id', entrepriseLogistiqueId)
-    .maybeSingle();
-  return data?.gestionnaire_id || null;
+  return null;
 }
 
 async function resolveDeliveryFeeForLivraison(db, livraison) {
@@ -652,21 +226,84 @@ async function resolveDeliveryFeeForLivraison(db, livraison) {
   return Number(livraison.commission_logistique ?? 0) + Number(livraison.montant_livreur ?? 0);
 }
 
-/** @deprecated — délègue au règlement post-livraison unifié. */
-async function settleDeliveryFeesOnComplete(db, livraison) {
-  if (!livraison?.sous_commande_id) {
-    return { skipped: true, reason: 'sans_sous_commande' };
+async function listTransactionsForUser(db, utilisateurId, { limit = 40 } = {}) {
+  return walletService.listTransactions(db, utilisateurId, { limit });
+}
+
+async function getWalletDashboard(db, utilisateurId) {
+  const [solde, transactions, retraits] = await Promise.all([
+    walletService.getSolde(db, utilisateurId),
+    walletService.listTransactions(db, utilisateurId, { limit: 25 }),
+    withdrawalRepo.listForUser(db, utilisateurId, { limit: 15 }),
+  ]);
+  return {
+    portefeuille_id: solde.portefeuilleId,
+    solde_fcfa: solde.soldeFcfa,
+    solde_en_attente_fcfa: solde.soldeEnAttenteFcfa,
+    devise: solde.devise,
+    transactions,
+    retraits,
+  };
+}
+
+const MIN_RETRAIT_FCFA = withdrawalService.MIN_WITHDRAW_FCFA;
+
+async function createWithdrawalRequest(db, utilisateurId, payload, { role } = {}) {
+  const { normalizeWithdrawalRequest } = require('../payments/dto/payout.dto');
+  const normalized = normalizeWithdrawalRequest(payload || {});
+  return withdrawalService.createRequest(db, utilisateurId, normalized, { role });
+}
+
+async function listWithdrawalsAdmin(db, { statut } = {}) {
+  return withdrawalRepo.listAll(db, { statut });
+}
+
+async function processWithdrawalAdmin(db, retraitId, adminUserId, { action, note_admin: noteAdmin } = {}) {
+  if (action === 'rejeter' || action === 'reject') {
+    return withdrawalService.rejectWithdrawal(db, retraitId, adminUserId, { motif: noteAdmin });
   }
-  return settleSousCommandePayout(db, livraison.sous_commande_id, livraison);
+  if (action === 'approuver' || action === 'approve' || action === 'payer' || action === 'pay') {
+    return withdrawalService.processWithdrawal(db, retraitId, { source: 'admin' });
+  }
+  throw createHttpError(400, 'Action invalide (approuver, rejeter).');
+}
+
+async function getPlatformWalletAdmin(db) {
+  const golivraUserId = await escrowService.resolveGolivraPlatformUserId(db);
+  const dashboard = await getWalletDashboard(db, golivraUserId);
+  // legacy : récupère les transactions + commissions
+  const tx = await walletService.listTransactions(db, golivraUserId, { limit: 100 });
+  let commissionsLivraison = 0;
+  let commissionsMois = 0;
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+  for (const t of tx) {
+    if (t.type === 'commission_golivra') {
+      commissionsLivraison += t.montantFcfa;
+      if (new Date(t.creeLe) >= monthStart) commissionsMois += t.montantFcfa;
+    }
+  }
+  const pending = await withdrawalRepo.listEnAttente(db, { limit: 100 });
+  const retraitsEnAttente = pending.reduce((acc, w) => acc + w.montantFcfa, 0);
+  return {
+    ...dashboard,
+    role: 'plateforme_golivra',
+    commissions_livraison_total_fcfa: commissionsLivraison,
+    commissions_livraison_mois_fcfa: commissionsMois,
+    retraits_en_attente_fcfa: retraitsEnAttente,
+    nb_retraits_en_attente: pending.length,
+    message: 'Revenus GoLivra = part plateforme sur les frais de livraison uniquement (pas de commission sur les ventes).',
+  };
 }
 
 async function getPortefeuilleSolde(db, utilisateurId) {
-  const pf = await getOrCreatePortefeuille(db, utilisateurId);
-  return Number(pf.solde ?? 0);
+  const r = await walletService.getSolde(db, utilisateurId);
+  return r.soldeFcfa;
 }
 
 module.exports = {
-  resolveGolivraPlatformUserId,
+  // Nouvelles fonctions (délèguent au module payments/)
   getOrCreatePortefeuille,
   creditWallet,
   debitWallet,
@@ -682,5 +319,14 @@ module.exports = {
   listWithdrawalsAdmin,
   processWithdrawalAdmin,
   getPlatformWalletAdmin,
+  // helpers legacy
+  resolveGolivraPlatformUserId,
+  hasWalletTransaction,
+  resolveLogisticsGestionnaireId,
+  resolveDriverUserId,
+  markSousCommandeReglee,
+  markCommandeEscrowCredited,
+  getEstablishmentOwnerId,
+  resolveDeliveryFeeForLivraison,
   MIN_RETRAIT_FCFA,
 };

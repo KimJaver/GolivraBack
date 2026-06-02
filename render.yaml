@@ -38,3 +38,30 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      # ── PawaPay (Mobile Money Congo) ─────────────────────────────────────
+      # Clé API Bearer fournie par PawaPay (header X-Api-Key / Authorization).
+      # Si vide, le module payments/ bascule en mode simulation (sandbox interne).
+      - key: PAWAPAY_API_KEY
+        sync: false
+      - key: PAWAPAY_API_BASE
+        value: https://api.sandbox.pawapay.io
+      # Secret HMAC-SHA256 pour la vérification des webhooks. Configurer la
+      # même valeur côté dashboard PawaPay sur les URLs
+      # https://<ton-domaine>/webhooks/pawapay/{deposits,payments,refunds}
+      - key: PAWAPAY_WEBHOOK_SECRET
+        sync: false
+      # Mode de paiement : "test" (simulation, sans PawaPay) ou "live".
+      - key: PAYMENT_MODE
+        value: live
+      # Wallet plateforme GoLivra (utilisateur admin utilisé pour les commissions).
+      - key: GOLIVRA_PLATFORM_USER_ID
+        sync: false
+      - key: GOLIVRA_PLATFORM_EMAIL
+        value: golivra@gmail.com
+      # Jobs paiements (laisser actifs en production).
+      - key: PAYMENTS_SCHEDULER
+        value: "1"
+      - key: PAYOUT_AUTO_ENABLED
+        value: "1"
+      - key: ESCROW_AUTO_RELEASE
+        value: "1"

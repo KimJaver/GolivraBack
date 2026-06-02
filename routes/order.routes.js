@@ -7,7 +7,7 @@ const {
   getOrderDetails,
   updateOrderStatus,
 } = require('../controllers/order.controller');
-const { payOrder, getPaymentMode, getPricingConfigHandler } = require('../controllers/payment.controller');
+const { payOrder, getPaymentMode, getPaymentStatus, getPricingConfigHandler } = require('../controllers/payment.controller');
 const { authMiddleware } = require('../middlewares/auth.middleware');
 const { requireRoles } = require('../middlewares/role.middleware');
 
@@ -15,6 +15,7 @@ const router = express.Router();
 
 router.get('/pricing-config', getPricingConfigHandler);
 router.get('/payment-mode', authMiddleware, getPaymentMode);
+router.get('/:orderId/payment-status', authMiddleware, getPaymentStatus);
 router.get('/', authMiddleware, getOrders);
 router.get('/vendor/mine', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), getVendorOrders);
 router.get('/vendor/:orderId', authMiddleware, requireRoles(['restaurateur', 'commercant', 'admin']), getVendorOrderDetails);

@@ -1,0 +1,134 @@
+/**
+ * Webhook PawaPay — deposit (paiement client)
+ *
+ * Réception des événements de paiement Mobile Money.
+ * - COMPLETED → met le paiement "valide" et déclenche l'escrow
+ * - FAILED    → met le paiement "echoue"
+ * - autres    → ignorés
+ */
+
+const crypto = require('crypto');
+const paymentRepo = require('../repositories/payment.repository');
+const escrowService = require('../services/escrow.service');
+const withdrawalRepo = require('../repositories/withdrawal.repository');
+const { pickString, isSuccessStatus, isFailedStatus, extractMetadata, extractPawapayId } = require('../dto/webhook.dto');
+const { info: logInfo, warn: logWarn, error: logError } = require('../../utils/logger');
+
+const WEBHOOK_SECRET = process.env.PAWAPAY_WEBHOOK_SECRET;
+
+function verifySignature(rawBody, signatureHeader) {
+  if (!WEBHOOK_SECRET) return { ok: true, skipped: true };
+  if (!signatureHeader) return { ok: false, reason: 'header_manquant' };
+  const expected = crypto.createHmac('sha256', WEBHOOK_SECRET).update(rawBody || '').digest('hex');
+  const provided = String(signatureHeader).replace(/^sha256=/, '').trim();
+  try {
+    const a = Buffer.from(expected, 'hex');
+    const b = Buffer.from(provided, 'hex');
+    if (a.length !== b.length) return { ok: false, reason: 'longueur_invalide' };
+    return { ok: crypto.timingSafeEqual(a, b) };
+  } catch {
+    return { ok: false, reason: 'signature_invalide' };
+  }
+}
+
+async function findPaiement(db, { depositId, meta }) {
+  if (depositId) {
+    const p = await paymentRepo.findByDepositId(db, depositId);
+    if (p) return p;
+  }
+  const paiementId = pickString(meta.paiementId, meta.paiement_id);
+  if (paiementId) {
+    const p = await paymentRepo.findById(db, paiementId);
+    if (p) return p;
+  }
+  const commandeId = pickString(meta.commandeId, meta.commande_id);
+  if (commandeId) {
+    return paymentRepo.findLatestForCommande(db, commandeId);
+  }
+  return null;
+}
+
+async function logEvent(db, { depositId, status, paiementId, payload }) {
+  if (!depositId) return { inserted: false, reason: 'pawapay_id_manquant' };
+  // Le journal pawapay_events est conservé pour rétro-compat avec l'existant
+  const { data, error } = await db
+    .from('pawapay_events')
+    .insert({
+      event_type: 'deposit',
+      pawapay_id: depositId,
+      status: status || null,
+      paiement_id: paiementId || null,
+      payload: payload || {},
+    })
+    .select('id')
+    .maybeSingle();
+  if (error) {
+    if (/unique|duplicate/i.test(error.message || '')) {
+      return { inserted: false, duplicate: true };
+    }
+    throw error;
+  }
+  return { inserted: true, id: data?.id };
+}
+
+async function handle(db, payload, { rawBody, signature } = {}) {
+  const sigCheck = verifySignature(rawBody || (typeof payload === 'string' ? payload : JSON.stringify(payload || {})), signature);
+  if (!sigCheck.ok) {
+    logWarn({ msg: 'pawapay_deposit_signature_invalide', reason: sigCheck.reason });
+    return { ok: false, code: 'SIGNATURE_INVALIDE' };
+  }
+
+  const status = pickString(payload.status, payload.transactionStatus, payload.State);
+  const depositId = extractPawapayId('deposit', payload);
+  const meta = extractMetadata(payload.metadata);
+
+  const paiement = await findPaiement(db, { depositId, meta });
+  logInfo({ msg: 'pawapay_deposit_webhook', depositId, status, paiementId: paiement?.id });
+
+  try {
+    const log = await logEvent(db, { depositId, status, paiementId: paiement?.id, payload });
+    if (log.duplicate) return { ok: true, dejaTraite: true };
+  } catch (err) {
+    logError({ msg: 'pawapay_deposit_log_failed', error: err.message });
+  }
+
+  if (!paiement) return { ok: true, ignored: 'paiement_introuvable' };
+
+  if (isSuccessStatus(status)) {
+    if (paiement.statut === 'valide') return { ok: true, dejaValide: true };
+    const now = new Date().toISOString();
+    const updated = await paymentRepo.update(db, paiement.id, {
+      statut: 'valide',
+      pawapay_deposit_id: depositId || paiement.pawapayDepositId,
+      reference_externe: depositId || paiement.referenceExterne,
+      numero_transaction: depositId || paiement.numeroTransaction,
+      paye_at: now,
+      metadata: { ...(paiement.metadata || {}), pawapay_deposit: { payload, received_at: now } },
+    });
+
+    // Déclenche l'escrow
+    try {
+      const { escrows, totalBloqueFcfa } = await escrowService.hold(db, updated.commandeId, updated.id);
+      return { ok: true, paiement: updated, escrow: { escrows, totalBloqueFcfa } };
+    } catch (err) {
+      logError({ msg: 'escrow_hold_after_deposit', paiementId: updated.id, error: err.message });
+      return { ok: true, paiement: updated, escrowError: err.message };
+    }
+  }
+
+  if (isFailedStatus(status)) {
+    if (paiement.statut === 'echoue') return { ok: true, dejaEchec: true };
+    const now = new Date().toISOString();
+    const updated = await paymentRepo.update(db, paiement.id, {
+      statut: 'echoue',
+      pawapay_deposit_id: depositId || paiement.pawapayDepositId,
+      failure_reason: status,
+      metadata: { ...(paiement.metadata || {}), pawapay_deposit: { payload, received_at: now } },
+    });
+    return { ok: true, paiement: updated, echec: true };
+  }
+
+  return { ok: true, ignored: 'statut_ignore', status };
+}
+
+module.exports = { handle, verifySignature };

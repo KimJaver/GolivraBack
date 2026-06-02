@@ -64,6 +64,20 @@ Quand Twilio sera prêt : renseignez `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, 
 
 Exécutez aussi sur Supabase : `sql/fix-otp-and-storage.sql` (tables OTP + bucket images).
 
+## Paiements (PawaPay + escrow + ledger)
+
+Le module `payments/` orchestre :
+
+- **Paiements client** via PawaPay (deposit) — modes `test` (simulation) et `live` (sandbox / prod)
+- **Escrow** — l'argent du client est bloqué sur le wallet plateforme jusqu'à la livraison
+- **Répartition post-livraison** — marchand (vente nette), livreur / entreprise logistique (frais nets), GoLivra (commission)
+- **Retraits** vers Mobile Money (Airtel / MTN) — auto-approuvés pour les commerces, livreurs, gestionnaires_logistique
+- **Webhooks PawaPay** signés HMAC — deposit / payout / refund
+- **Jobs automatiques** : `payoutJob`, `escrowReleaseJob`
+- **Registre comptable** (`ledger_entries`) — un ledger entry par mouvement, pour audit
+
+Voir [`payments/README.md`](./payments/README.md) pour l'architecture complète et [`sql/amendments-payments-refactor.sql`](./sql/amendments-payments-refactor.sql) pour la migration à exécuter dans Supabase.
+
 ## Sécurité (production)
 
 - **Helmet** : en-têtes HTTP renforcés ; `Content-Security-Policy` désactivé (API JSON) ; `Cross-Origin-Resource-Policy: cross-origin` pour rester compatible avec CORS / clients mobiles.
