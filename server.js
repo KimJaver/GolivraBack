@@ -22,6 +22,7 @@ const cartRoutes = require('./routes/cart.routes');
 const settingsRoutes = require('./routes/settings.routes');
 const promoRoutes = require('./routes/promo.routes');
 const observabilityRoutes = require('./routes/observability.routes');
+const observabilityAdminRoutes = require('./routes/observability-admin.routes');
 const { requestContextMiddleware } = require('./middlewares/request-context.middleware');
 const { getDb } = require('./config/db');
 
@@ -140,6 +141,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/promo', promoRoutes);
 app.use('/api/observability', observabilityRoutes);
+app.use('/api/admin/observability', observabilityAdminRoutes);
 
 function httpErrorCode(status, err) {
   const raw = err.code;
@@ -289,6 +291,8 @@ async function startServer() {
   }
   await ensureBaseRoles();
   await ensureBaseCategories();
+  const observabilityScheduler = require('./services/observability-scheduler.service');
+  observabilityScheduler.start();
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     const env = process.env.NODE_ENV || 'development';

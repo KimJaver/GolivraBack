@@ -1,4 +1,5 @@
-const { newRequestId, info } = require('../utils/logger');
+const { newRequestId, info, warn, error: logError } = require('../utils/logger');
+const observability = require('../services/observability.service');
 
 function requestContextMiddleware(req, res, next) {
   const requestId = newRequestId(req.headers['x-request-id']);
@@ -14,6 +15,8 @@ function requestContextMiddleware(req, res, next) {
     const ms = Date.now() - req.requestStartedAt;
     const status = res.statusCode;
     const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+
+    // Log console (existant)
     info({
       requestId,
       method: req.method,
@@ -23,6 +26,35 @@ function requestContextMiddleware(req, res, next) {
       userId: req.auth?.userId || null,
       clientSource,
     });
+
+    // Persistance métrique + détection slow
+    observability.recordRequestMetricAsync({
+      requestId,
+      method: req.method,
+      path: req.originalUrl || req.url,
+      status,
+      latencyMs: ms,
+      source: clientSource,
+      userId: req.auth?.userId || null,
+      userRole: req.auth?.role || null,
+    });
+
+    // Auto-capture des erreurs 5xx (en plus des erreurs catchées par le handler global)
+    if (status >= 500 && !req._observabilityCaptured) {
+      const incident = observability.incidentFromHttpError(
+        { status, message: `${req.method} ${req.originalUrl} → ${status}`, stack: null },
+        req,
+        {
+          category: observability.inferCategory({ http_path: req.originalUrl }),
+          source: 'backend',
+        },
+      );
+      observability.recordIncidentAsync(incident);
+    }
+
+    if (observability.isSlowRequest(ms)) {
+      warn({ msg: 'slow_request', requestId, ms, path: req.originalUrl, method: req.method });
+    }
   });
 
   next();
