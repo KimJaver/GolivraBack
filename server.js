@@ -89,7 +89,8 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '512kb' }));
+app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ limit: '15mb', extended: true }));
 app.use(requestContextMiddleware);
 
 app.get('/health', (_req, res) => {
