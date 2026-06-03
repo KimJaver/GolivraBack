@@ -145,4 +145,75 @@ module.exports = {
   removeFavorite,
   toggleFavorite,
   syncFavorites,
+  listFavoriteProducts,
+  toggleFavoriteProduct,
+  removeFavoriteProduct,
 };
+
+/* ============================================================ */
+/* PRODUITS (plats + articles)                                  */
+/* ============================================================ */
+
+const VALID_KINDS = new Set(['plat', 'article']);
+
+async function verifyProductExists(db, productId, kind) {
+  if (!VALID_KINDS.has(kind)) return false;
+  const table = kind === 'plat' ? 'plats' : 'articles';
+  const { data } = await db.from(table).select('id').eq('id', productId).maybeSingle();
+  return Boolean(data?.id);
+}
+
+async function listFavoriteProducts(db, userId) {
+  const { data, error } = await db
+    .from('favoris_produits')
+    .select('produit_id, produit_kind, created_at')
+    .eq('client_id', userId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map((row) => ({
+    produit_id: row.produit_id,
+    produit_kind: row.produit_kind,
+    favorited_at: row.created_at,
+  }));
+}
+
+async function toggleFavoriteProduct(db, userId, productId, kind) {
+  if (!productId) throw createHttpError(400, 'produitId requis');
+  if (!VALID_KINDS.has(kind)) throw createHttpError(400, 'kind doit etre "plat" ou "article"');
+
+  // Verifie que le produit existe (404 clair si pas).
+  const exists = await verifyProductExists(db, productId, kind);
+  if (!exists) throw createHttpError(404, 'Produit introuvable.');
+
+  const { data: existing } = await db
+    .from('favoris_produits')
+    .select('produit_id')
+    .eq('client_id', userId)
+    .eq('produit_id', productId)
+    .eq('produit_kind', kind)
+    .maybeSingle();
+
+  if (existing) {
+    await removeFavoriteProduct(db, userId, productId, kind);
+    return { produit_id: productId, produit_kind: kind, favori: false };
+  }
+
+  const { error } = await db
+    .from('favoris_produits')
+    .insert({ client_id: userId, produit_id: productId, produit_kind: kind });
+  if (error) throw error;
+  return { produit_id: productId, produit_kind: kind, favori: true };
+}
+
+async function removeFavoriteProduct(db, userId, productId, kind) {
+  if (!productId || !VALID_KINDS.has(kind)) {
+    return { produit_id: productId, produit_kind: kind, favori: false };
+  }
+  await db
+    .from('favoris_produits')
+    .delete()
+    .eq('client_id', userId)
+    .eq('produit_id', productId)
+    .eq('produit_kind', kind);
+  return { produit_id: productId, produit_kind: kind, favori: false };
+}

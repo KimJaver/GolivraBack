@@ -6,6 +6,9 @@ const {
   removeFavorite,
   toggleFavorite,
   syncFavorites,
+  listFavoriteProducts,
+  toggleFavoriteProduct,
+  removeFavoriteProduct,
 } = require('../services/favorites.service');
 
 async function listMine(req, res, next) {
@@ -64,10 +67,52 @@ async function sync(req, res, next) {
   }
 }
 
+/* ============================================================ */
+/* PRODUITS (plats + articles)                                  */
+/* ============================================================ */
+
+async function listMineProducts(req, res, next) {
+  try {
+    const db = getDb();
+    const items = await listFavoriteProducts(db, req.auth.userId);
+    return res.json({ items });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function toggleProduct(req, res, next) {
+  try {
+    const { produitId, produitKind } = req.body;
+    requireFields(req.body, ['produitId', 'produitKind']);
+    const db = getDb();
+    const result = await toggleFavoriteProduct(db, req.auth.userId, produitId, produitKind);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function removeProduct(req, res, next) {
+  try {
+    const { productId } = req.params;
+    const { produitKind } = req.query;
+    const kind = String(produitKind || '');
+    const db = getDb();
+    const result = await removeFavoriteProduct(db, req.auth.userId, productId, kind);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   listMine,
   add,
   remove,
   toggle,
   sync,
+  listMineProducts,
+  toggleProduct,
+  removeProduct,
 };

@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   listProducts,
+  listProductFeed,
   createProduct,
   updateProduct,
   deleteProduct,
@@ -17,6 +18,10 @@ const { requireRoles } = require('../middlewares/role.middleware');
 const router = express.Router();
 
 const MERCHANT_ROLES = ['restaurateur', 'commercant', 'admin'];
+
+// Feed public de produits/dishes agreges depuis tous les commerces actifs.
+// Doit etre declare AVANT /enterprise/:enterpriseId sinon le wildcard capture.
+router.get('/feed', optionalAuthMiddleware, listProductFeed);
 
 router.get('/enterprise/:enterpriseId/categories', optionalAuthMiddleware, listProductCategories);
 router.post(

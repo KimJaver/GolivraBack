@@ -327,6 +327,93 @@ async function listProducts(req, res, next) {
   }
 }
 
+/**
+ * Feed public de produits/dishes, agrege depuis TOUS les commerces actifs.
+ * Query params:
+ *   - type: 'plat' | 'article' | undefined (les deux)
+ *   - promo: 'true' pour ne garder que les produits en promo (prix_promo NOT NULL)
+ *   - limit: nombre max (defaut 30, max 100)
+ *   - offset: pagination (defaut 0)
+ * Reponse: tableau plat de produits enrichis avec les infos vendeur
+ *   (enterprise_id, enterprise_nom, enterprise_type, enterprise_image_url).
+ *
+ * Public: pas besoin d'auth (les commerces non-actifs sont filtres cote DB).
+ */
+async function listProductFeed(req, res, next) {
+  try {
+    const db = getDb();
+    const type = typeof req.query.type === 'string' ? req.query.type.toLowerCase() : null;
+    const onlyPromo = String(req.query.promo || '').toLowerCase() === 'true';
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 30));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+
+    const includePlats = !type || type === 'plat' || type === 'all';
+    const includeArticles = !type || type === 'article' || type === 'all';
+
+    const out = [];
+
+    if (includePlats) {
+      let q = db
+        .from('plats')
+        .select('*, restaurants!inner(id, nom, statut, image_url, type)')
+        .eq('restaurants.statut', 'active')
+        .order('est_en_vedette', { ascending: false })
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+      if (onlyPromo) q = q.not('prix_promo', 'is', null);
+      const { data, error } = await q;
+      if (error) throw error;
+      for (const p of data || []) {
+        const rest = p.restaurants || {};
+        out.push({
+          ...mapPlatToProduct(p, p.restaurant_id),
+          enterprise_id: p.restaurant_id,
+          enterprise_nom: rest.nom || null,
+          enterprise_type: 'restaurant',
+          enterprise_image_url: rest.image_url || null,
+        });
+      }
+    }
+
+    if (includeArticles) {
+      // Si on a deja recupere des plats, on reduit la limite pour equilibrer.
+      const articleLimit = includePlats ? Math.max(0, limit - out.length) : limit;
+      if (articleLimit > 0) {
+        let q = db
+          .from('articles')
+          .select('*, boutiques!inner(id, nom, statut, image_url, type)')
+          .eq('boutiques.statut', 'active')
+          .order('est_en_vedette', { ascending: false })
+          .order('created_at', { ascending: false })
+          .range(offset, offset + articleLimit - 1);
+        if (onlyPromo) q = q.not('prix_promo', 'is', null);
+        const { data, error } = await q;
+        if (error) throw error;
+        for (const a of data || []) {
+          const bou = a.boutiques || {};
+          out.push({
+            ...mapArticleToProduct(a, a.boutique_id),
+            enterprise_id: a.boutique_id,
+            enterprise_nom: bou.nom || null,
+            enterprise_type: 'boutique',
+            enterprise_image_url: bou.image_url || null,
+          });
+        }
+      }
+    }
+
+    // Melange les resultats pour eviter d'avoir tous les plats puis tous les articles.
+    for (let i = out.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+
+    return res.json(out);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function createProduct(req, res, next) {
   try {
     const { enterpriseId } = req.params;
@@ -705,6 +792,7 @@ async function trackProductClick(req, res, next) {
 
 module.exports = {
   listProducts,
+  listProductFeed,
   createProduct,
   updateProduct,
   deleteProduct,
