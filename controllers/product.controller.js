@@ -1,9 +1,13 @@
 const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
 const { getUserScores, personalizeResults } = require('../services/personalization.service');
-const { isMissingColumnError } = require('../utils/supabase-errors');
 
 const ACTIVE = 'active';
+
+function isMissingColumnError(error, column) {
+  const msg = String(error?.message ?? error ?? '').toLowerCase();
+  return msg.includes(column) && (msg.includes('column') || msg.includes('colonne') || msg.includes('schema'));
+}
 
 async function resolveEstablishment(db, enterpriseId) {
   const { data: r } = await db.from('restaurants').select('*').eq('id', enterpriseId).maybeSingle();

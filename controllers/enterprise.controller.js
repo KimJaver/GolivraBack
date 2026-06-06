@@ -1,7 +1,6 @@
 const { getDb } = require('../config/db');
 const { requireFields, createHttpError } = require('../utils/http');
 const { getUserScores, personalizeResults } = require('../services/personalization.service');
-const { isMissingColumnError } = require('../utils/supabase-errors');
 const { resolveStoredImage, logoFieldsFromBody } = require('../utils/images');
 
 const COMMERCE_TYPES = new Set(['restaurant', 'boutique']);
