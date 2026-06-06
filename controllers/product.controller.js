@@ -1,5 +1,7 @@
 const { getDb } = require('../config/db');
 const { createHttpError, requireFields } = require('../utils/http');
+const { getUserScores, personalizeResults } = require('../services/personalization.service');
+const { isMissingColumnError } = require('../utils/supabase-errors');
 
 const ACTIVE = 'active';
 
@@ -232,10 +234,7 @@ function applyArticleCatalogFields(target, body) {
 const OPTIONAL_ARTICLE_COLUMNS = ['dimensions', 'images_urls', 'type_produit', 'etat_produit', 'marque', 'poids_kg', 'tags', 'promo_debut_at', 'promo_fin_at'];
 const OPTIONAL_PLAT_COLUMNS = ['images_urls', 'tags', 'allergenes', 'promo_debut_at', 'promo_fin_at'];
 
-function isMissingColumnError(error, column) {
-  const msg = String(error?.message ?? error ?? '').toLowerCase();
-  return msg.includes(column) && (msg.includes('column') || msg.includes('colonne') || msg.includes('schema'));
-}
+
 
 async function insertArticleRow(db, row) {
   const payload = { ...row };
@@ -381,6 +380,15 @@ async function listProductFeed(req, res, next) {
         }
       }
     }
+    // --- Personnalisation Algorithmique ---
+    const userId = req.auth?.userId;
+    if (userId) {
+      const scores = await getUserScores(userId);
+      const personalized = personalizeResults(out, scores, { rotationStrength: 0.2 });
+      return res.json(personalized.slice(offset, offset + limit));
+    }
+
+    // Pour les anonymes, on garde un mélange aléatoire de base
     for (let i = out.length - 1; i > 0; i -= 1) {
       const j = Math.floor(Math.random() * (i + 1));
       [out[i], out[j]] = [out[j], out[i]];

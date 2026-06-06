@@ -1,5 +1,7 @@
 const { getDb } = require('../config/db');
 const { requireFields, createHttpError } = require('../utils/http');
+const { getUserScores, personalizeResults } = require('../services/personalization.service');
+const { isMissingColumnError } = require('../utils/supabase-errors');
 const { resolveStoredImage, logoFieldsFromBody } = require('../utils/images');
 
 const COMMERCE_TYPES = new Set(['restaurant', 'boutique']);
@@ -102,8 +104,12 @@ function isPubliclyVisible(row) {
 async function listEnterprises(req, res, next) {
   try {
     const { type, categorie_id: categorieId } = req.query;
+    if (type && !COMMERCE_TYPES.has(type)) {
+      throw createHttpError(400, `Type de commerce invalide: ${type}`);
+    }
+
     const db = getDb();
-    const out = [];
+    let out = [];
 
     if (!type || type === 'restaurant') {
       let q = db
@@ -141,7 +147,19 @@ async function listEnterprises(req, res, next) {
       (data || []).forEach((b) => out.push(mapBoutique(b, catMap.get(b.categorie_id) ?? null)));
     }
 
-    out.sort((a, b) => String(a.nom || '').localeCompare(String(b.nom || '')));
+    // --- Personnalisation Algorithmique ---
+    const userId = req.auth?.userId;
+    if (userId) {
+      const scores = await getUserScores(userId);
+      out = personalizeResults(out, scores, { rotationStrength: 0.2 });
+    } else {
+      // Mélange aléatoire par défaut
+      for (let i = out.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [out[i], out[j]] = [out[j], out[i]];
+      }
+    }
+
     return res.json(out);
   } catch (error) {
     return next(error);

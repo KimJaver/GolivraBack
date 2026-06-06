@@ -25,6 +25,7 @@ const promoRoutes = require('./routes/promo.routes');
 const observabilityRoutes = require('./routes/observability.routes');
 const observabilityAdminRoutes = require('./routes/observability-admin.routes');
 const usageAdminRoutes = require('./routes/usage-admin.routes');
+const usageTrackingRoutes = require('./routes/usage-tracking.routes');
 const pawapayWebhookRoutes = require('./routes/pawapay-webhook.routes');
 const paymentRoutes = require('./payments/routes/payment.routes');
 const payoutRoutes = require('./payments/routes/payout.routes');
@@ -158,6 +159,7 @@ app.use('/api/promo', promoRoutes);
 app.use('/api/observability', observabilityRoutes);
 app.use('/api/admin/observability', observabilityAdminRoutes);
 app.use('/api/admin/usage', usageAdminRoutes);
+app.use('/api/track', usageTrackingRoutes);
 
 // ── Module Paiements (escrow, ledger, payouts, webhooks) ────────────────────
 // Note : la route POST /api/orders/:orderId/pay reste dans order.routes.js
