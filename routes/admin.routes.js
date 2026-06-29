@@ -1,5 +1,6 @@
 const express = require('express');
 const locationAdmin = require('../controllers/admin-location.controller');
+const campaignAdmin = require('../controllers/admin-campaign.controller');
 
 const {
   getAdminStats,
@@ -79,6 +80,13 @@ router.get('/incidents/summary', ...adminOnly, getAdminIncidentsSummary);
 router.get('/incidents', ...adminOnly, listAdminIncidents);
 router.get('/incidents/:incidentId', ...adminOnly, getAdminIncidentDetail);
 router.patch('/incidents/:incidentId/resolve', ...adminOnly, patchResolveIncident);
+
+// ── Gestion des campagnes marketing ─────────────────────────────────────
+router.get('/campagnes', ...adminOnly, campaignAdmin.getCampagnesList);
+router.get('/campagnes/:campagneId', ...adminOnly, campaignAdmin.getCampagneDetail);
+router.post('/campagnes', ...adminOnly, campaignAdmin.postCampagne);
+router.patch('/campagnes/:campagneId', ...adminOnly, campaignAdmin.patchCampagne);
+router.delete('/campagnes/:campagneId', ...adminOnly, campaignAdmin.removeCampagne);
 
 // ── Gestion des pays / villes / arrondissements ────────────────────────────
 router.get('/locations/pays', ...adminOnly, locationAdmin.getPaysList);
